@@ -50,7 +50,7 @@ cl %CFLAGS% /Isrc\proxy /Ibuild\gen /Isrc\third_party\minhook\include /Fobuild\o
 set "RC=%ERRORLEVEL%"
 findstr /c:": error" /c:": warning" /c:"fatal error" build\obj\cl-proxy.txt
 if not "%RC%"=="0" exit /b 1
-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /OUT:build\d3d11.dll /PDB:build\d3d11.pdb /DEF:src\proxy\gen\d3d11.def build\obj\proxy\*.obj build\obj\proxy\version.res user32.lib > build\obj\link-proxy.txt 2>&1
+link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /OUT:build\d3d11.dll /PDB:build\d3d11.pdb /DEF:src\proxy\gen\d3d11.def build\obj\proxy\*.obj build\obj\proxy\version.res user32.lib gdi32.lib > build\obj\link-proxy.txt 2>&1
 set "RC=%ERRORLEVEL%"
 findstr /v /c:"Creating library" build\obj\link-proxy.txt
 if not "%RC%"=="0" exit /b 1
@@ -81,7 +81,7 @@ set "RC=%ERRORLEVEL%"
 findstr /c:": error" /c:": warning" /c:"fatal error" build\obj\cl-drive.txt
 if not "%RC%"=="0" exit /b 1
 if not exist build\drive mkdir build\drive
-link /nologo /DEBUG /OUT:build\drive\drive.exe /PDB:build\drive\drive.pdb build\obj\drive\drive.obj user32.lib d3d11.lib dxgi.lib ole32.lib windowscodecs.lib > build\obj\link-drive.txt 2>&1
+link /nologo /DEBUG /OUT:build\drive\drive.exe /PDB:build\drive\drive.pdb build\obj\drive\drive.obj user32.lib gdi32.lib d3d11.lib dxgi.lib ole32.lib windowscodecs.lib > build\obj\link-drive.txt 2>&1
 set "RC=%ERRORLEVEL%"
 type build\obj\link-drive.txt
 if not "%RC%"=="0" exit /b 1

@@ -25,6 +25,7 @@ static std::string g_traceTag;
 static LONG64 g_traceFrame = 0;
 static std::vector<std::string> g_traceLines;
 static int g_traceEvent = 0;
+static bool g_traceWarmup = false;  // first frame of a trace: deferred contexts record, nothing is written
 static std::atomic<int> g_traceGen{0};
 static int g_dumpEvent = -1;  // dumprt armed (also for ps: mode)
 static std::string g_dumpPs;  // dumprt ps:<id prefix>: match by pixel shader instead of event number
@@ -375,7 +376,7 @@ static void DumpPixelConstants(WrappedContext* ctx) {
 }
 
 void TraceAfterAction(WrappedContext* ctx) {
-    if (!ctx->IsImmediate() || g_dumpEvent < 0) return;
+    if (!ctx->IsImmediate() || g_dumpEvent < 0 || g_traceWarmup) return;
     if (g_dumpPs.empty()) {
         if (g_dumpEvent != g_traceEvent) return;
     } else {  // dumprt ps:<id>: after the first immediate draw with that pixel shader
@@ -435,6 +436,7 @@ void TraceExecuteCommandList(ID3D11CommandList* cl) {
 
 static void StartTrace(const std::string& tag, LONG64 frame) {
     std::lock_guard<std::mutex> lock(g_traceMutex);
+    g_traceWarmup = true;
     g_traceTag = tag;
     g_traceFrame = frame + 1;
     g_traceLines.clear();
@@ -573,7 +575,19 @@ static void PollRequests(LONG64 frame, double fps) {
 }
 
 void DiagBeforePresent(IDXGISwapChain* sc, WrappedDevice* device, LONG64 frame) {
-    if (TraceActive()) FinishTrace(sc);
+    if (TraceActive()) {
+        if (g_traceWarmup) {
+            // The warm-up frame only let deferred contexts start recording; trace the next one, whose command
+            // lists may have been recorded during this frame.
+            std::lock_guard<std::mutex> lock(g_traceMutex);
+            g_traceWarmup = false;
+            g_traceLines.clear();
+            g_traceEvent = 0;
+            g_traceFrame = frame + 1;
+        } else {
+            FinishTrace(sc);
+        }
+    }
     if (g_pendingCaptures.empty() || !device) return;
     for (auto& tag : g_pendingCaptures) {
         ID3D11Texture2D* bb = nullptr;

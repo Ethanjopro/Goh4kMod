@@ -1,8 +1,9 @@
 # Goh4kMod log
 
 ## Status
-M1-M3 done (2026-10-02). Next: M4 (mission passes). Game set to 1920x1080 fullscreen (was 3840x2160), Scale=2.
-Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED during development.
+M1-M5 DONE (2026-10-02). The mod is INSTALLED: d3d11.dll + dxgi.dll in binaries\x64, config Scale=2. The
+game is set to 1920x1080 Fullscreen and renders 3840x2160 with the UI at its 1080p size.
+Run uninstall.cmd before playing multiplayer. Usage notes are in PLAN.md ("How to use").
 
 ## Gotchas (symptom -> cause -> fix)
 - vcvars64.bat prints "'vswhere.exe' is not recognized" -> it calls vswhere by name internally -> harmless;
@@ -21,7 +22,7 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
   size. Symptoms: cut text labels, quarter-screen or black scene, blur everywhere -> backbuffer wrapper
   (logical GetDesc, unwrapped by the generated forwarders), real-size targets tagged as 2x, HBAO+ calls
   exempt by module address. Diagnose with dumprt ps:<shader id> per post stage.
-- proxytest while the game runs -> the game consumes capturesequest.txt -> run tests with the game closed.
+- proxytest while the game runs -> the game consumes captures\request.txt -> run tests with the game closed.
 - drive.exe click path at native 4K UI (coordinates change once the game runs at 1080p logical):
   SINGLEPLAYER 1600,1192 > CAMPAIGN 1420,630 > SELECT CAMPAIGN 1420,728 > USSR 2240,980 > first campaign
   1420,632 > first mission 1420,608 > Easy 1322,1525 (starts loading). Esc/space skip the intro; space
@@ -55,9 +56,21 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
 - 2026-10-02 13:45 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
 - 2026-10-02 13:52 deploy: d3d11.dll sha256 B75D8D1BB7AE (replaced our previous build)
 - 2026-10-02 13:52 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 14:07 deploy: d3d11.dll sha256 F3375D4A32B6 (replaced our previous build)
+- 2026-10-02 14:07 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 14:12 uninstall: removed d3d11.dll
+- 2026-10-02 14:12 uninstall: removed dxgi.dll
+- 2026-10-02 14:12 uninstall check: folder matches the baseline (26 files)
+- 2026-10-02 14:13 deploy: d3d11.dll sha256 009E310D833E (new file)
+- 2026-10-02 14:13 deploy: dxgi.dll sha256 FD2866FB95DF (new file)
 
 ## Cleanup
-(none yet; anything a tool writes outside the project folder goes here)
+- Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
+  campaign, campaign\conquest 4.sav (Germany vs USSR, one retreat). Delete it freely. Ethan's own saves and
+  campaigns are byte-identical to scratch\profile-backup-2026-10-02.
+- options.set: the resolution changed from 3840x2160 to 1920x1080, which the mod needs. To play without the
+  mod, set 3840x2160 in the game's Options or restore scratch\settings-backup\options.set.2026-10-02.
+- scratch\shaderpak holds HLSL extracted read-only from shader.pak for analysis (gitignored). Delete freely.
 
 ## Journal (newest at the bottom)
 ### 2026-10-02 Planning + Phase 0
@@ -214,3 +227,36 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
   GetDimensions). m4-smoke-crop.png, Operation Bustard Hunt intro: no hard edges.
 - Tools: dumprt ps:<id prefix> [ds] [cb] (match by pixel shader; cb prints the PS constant buffers).
 - Still to check: water/WaveWorks, the sun disc (sky patch), Conquest unit cards and tech tree.
+
+### 2026-10-02 M4 (part 2) and M5: DONE
+- Conquest (problem spot reported in the Steam thread): created a new Conquest campaign with the mod at 2x.
+  - Unit cards: m4-cards-crop.png shows art, text and lock icons all correct.
+  - 3D squad preview: m4-unitpreview-crop.png shows nine soldiers rendered cleanly.
+  - Tech tree: m4-tech-crop.png shows nodes, lines, icons and text all correct.
+  - Units deploy by drag-and-drop (drive.exe drag), and the battle started and played.
+  - The WineHooks glitches here came from scaling every render target and patching shaders. Our
+    size-matched rules leave these UI targets at 1x.
+- Water/WaveWorks: none of the tested maps had water in view; a battle trace shows only reflection
+  pre-pass draws (512x512, unscaled) and no screen-size issue. Water shaders read SV_Position / GetDimensions
+  of scaled textures, so they behave like soft particles. A visual check on a water map is still to do
+  (not blocking).
+- Cursor (M5): CreateIconIndirect is hooked for exe calls only, and cursors are built at 2x (nearest
+  neighbour, doubled hotspot). `drive cursor` shows 32x32 before and 64x64 after.
+  "fix nocursorscale on" disables it.
+- Alt-tab (M5):
+  - Fullscreen: SetFullscreenState(0), ResizeTarget(1920x1080) becomes a real 3840x2160 mode, and
+    ResizeBuffers(0x0) stays 2x. Before/after captures: PSNR 52.5 dB. Clicks still map correctly.
+  - Borderless ("Windowed borderless foreground"): 3840x2160 windowed, menu clicks correct, alt-tab
+    before/after PSNR 53.1 dB.
+  - Switched back to Fullscreen afterwards. The keep-settings dialog only sticks if the Options dialog is
+    then left with Esc, not X.
+- Steam overlay (Shift+Tab): draws at native 4K with its own cursor and closes cleanly. Its calls are not
+  converted (exe-only return-address filter).
+- Clean install (M5): uninstall, then the folder matches the baseline (26 files). Then a clean rebuild
+  (build.cmd), proxytest PASSED, the deploy self-test PASSED, and a fresh deploy.
+  Play check on the fresh install:
+  - menu vs native 1080p: PSNR 42.1 dB;
+  - mission: 29.7 dB, which is 4K detail vs 1080p, signed mean +0.02;
+  - cursor 64x64, 159 fps, clean exit.
+  The mod is left INSTALLED for Ethan.
+- Anti-cheat never reacted, across about 15 single-player sessions with the proxies and user32 hooks.

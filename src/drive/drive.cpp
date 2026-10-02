@@ -3,9 +3,10 @@
 //   drive focus 1234 wait 300 click 1920 1080 wait 1500 snap captures\nav\menu.png
 // Coordinates are physical screen pixels (the process is per-monitor DPI aware).
 //   snap <file.png> [divisor]   desktop duplication of the primary monitor, box-downscaled (default /4)
-//   move x y | click x y [right] | dclick x y | wheel n | key name[+name...] | wait ms
+//   move x y | click x y [right] | dclick x y | drag x1 y1 x2 y2 | wheel n | key name[+name...] | wait ms
 //   focus pid                   bring that process's main window to the foreground
 //   fg                          print the foreground window's pid, title and size, and the cursor position
+//   cursor                      print the current hardware cursor's bitmap size and hotspot
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -52,6 +53,19 @@ static void Click(int x, int y, bool right, int count) {
         SendMouse(right ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP);
         if (i + 1 < count) Sleep(80);
     }
+}
+
+static void Drag(int x1, int y1, int x2, int y2) {
+    MoveTo(x1, y1);
+    Sleep(80);
+    SendMouse(MOUSEEVENTF_LEFTDOWN);
+    Sleep(120);
+    for (int i = 1; i <= 12; ++i) {  // move in steps so the UI sees a drag
+        MoveTo(x1 + (x2 - x1) * i / 12, y1 + (y2 - y1) * i / 12);
+        Sleep(25);
+    }
+    Sleep(120);
+    SendMouse(MOUSEEVENTF_LEFTUP);
 }
 
 static WORD VkFromName(const std::string& n) {
@@ -143,6 +157,22 @@ static bool Focus(DWORD pid) {
     bool ok = GetForegroundWindow() == f.best;
     printf("focus pid %lu hwnd %p: %s\n", pid, f.best, ok ? "foreground" : "NOT foreground");
     return ok;
+}
+
+// The current hardware cursor's bitmap size and hotspot (desktop duplication doesn't draw the cursor).
+static void PrintCursor() {
+    CURSORINFO ci = {sizeof(ci)};
+    if (!GetCursorInfo(&ci) || !ci.hCursor) return (void)printf("cursor: none (flags 0x%lx)\n", ci.flags);
+    ICONINFO ii = {};
+    if (!GetIconInfo(ci.hCursor, &ii)) return (void)printf("cursor %p: GetIconInfo failed\n", ci.hCursor);
+    BITMAP bm = {};
+    GetObjectW(ii.hbmColor ? ii.hbmColor : ii.hbmMask, sizeof(bm), &bm);
+    int h = ii.hbmColor ? bm.bmHeight : bm.bmHeight / 2;  // monochrome masks hold AND over XOR
+    printf("cursor %p: %dx%d %s, hotspot %lu,%lu, shown=%d, at (%ld,%ld)\n", ci.hCursor, bm.bmWidth, h,
+           ii.hbmColor ? "color" : "monochrome", ii.xHotspot, ii.yHotspot, (ci.flags & CURSOR_SHOWING) ? 1 : 0,
+           ci.ptScreenPos.x, ci.ptScreenPos.y);
+    if (ii.hbmColor) DeleteObject(ii.hbmColor);
+    if (ii.hbmMask) DeleteObject(ii.hbmMask);
 }
 
 static void PrintForeground() {
@@ -363,6 +393,9 @@ int wmain(int argc, wchar_t** argv) {
             bool right = arg(i + 3) == L"right";
             Click(num(i + 1), num(i + 2), right, cmd == L"dclick" ? 2 : 1);
             i += right ? 4 : 3;
+        } else if (cmd == L"drag") {
+            Drag(num(i + 1), num(i + 2), num(i + 3), num(i + 4));
+            i += 5;
         } else if (cmd == L"wheel") {
             SendMouse(MOUSEEVENTF_WHEEL, 0, 0, (DWORD)(num(i + 1) * WHEEL_DELTA));
             i += 2;
@@ -377,6 +410,9 @@ int wmain(int argc, wchar_t** argv) {
             i += 2;
         } else if (cmd == L"fg") {
             PrintForeground();
+            i += 1;
+        } else if (cmd == L"cursor") {
+            PrintCursor();
             i += 1;
         } else {
             printf("unknown command '%ls'\n", cmd.c_str());

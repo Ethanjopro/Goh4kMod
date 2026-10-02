@@ -4,8 +4,10 @@
 // address is inside the game exe are converted; other modules (Steam overlay, drivers) see real values.
 // The game's exe and memory are never touched. Raw-input deltas pass through unchanged.
 #include "input.h"
+#include "diag.h"
 #include "MinHook.h"
 #include <intrin.h>
+#include <vector>
 #include <windowsx.h>
 #pragma intrinsic(_ReturnAddress)
 
@@ -153,6 +155,72 @@ static BOOL WINAPI Hook_PeekMessageW(LPMSG m, HWND h, UINT lo, UINT hi, UINT rm)
     return r;
 }
 
+// ---------------------------------------------------------------- cursor size
+// The game builds its cursors with CreateIconIndirect and Windows draws them at real pixels, so at 2x they
+// look half-size. Cursors (fIcon == FALSE) created by the exe are built at 2x instead: nearest-neighbour
+// colour and mask, doubled hotspot. The game owns and destroys them as usual. "fix nocursorscale on" (set
+// before the cursor is created) keeps the original size.
+
+static HBITMAP ScaleColorBitmap(HBITMAP src, int s) {
+    BITMAP bm = {};
+    if (!GetObjectW(src, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return nullptr;
+    int w = bm.bmWidth, h = bm.bmHeight;
+    BITMAPINFO bi = {};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB};
+    std::vector<uint32_t> in((size_t)w * h);
+    HDC dc = GetDC(nullptr);
+    bool ok = GetDIBits(dc, src, 0, h, in.data(), &bi, DIB_RGB_COLORS) == h;
+    HBITMAP out = nullptr;
+    if (ok) {
+        BITMAPINFO bo = {};
+        bo.bmiHeader = {sizeof(BITMAPINFOHEADER), w * s, -h * s, 1, 32, BI_RGB};
+        void* bits = nullptr;
+        out = CreateDIBSection(dc, &bo, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (out && bits) {
+            auto* o = (uint32_t*)bits;
+            for (int y = 0; y < h * s; ++y)
+                for (int x = 0; x < w * s; ++x) o[(size_t)y * w * s + x] = in[(size_t)(y / s) * w + x / s];
+        }
+    }
+    ReleaseDC(nullptr, dc);
+    return out;
+}
+
+static HBITMAP ScaleMaskBitmap(HBITMAP src, int s) {
+    BITMAP bm = {};
+    if (!GetObjectW(src, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return nullptr;
+    HBITMAP out = CreateBitmap(bm.bmWidth * s, bm.bmHeight * s, 1, 1, nullptr);
+    HDC a = CreateCompatibleDC(nullptr), b = CreateCompatibleDC(nullptr);
+    HGDIOBJ oa = SelectObject(a, src), ob = SelectObject(b, out);
+    SetStretchBltMode(b, COLORONCOLOR);
+    StretchBlt(b, 0, 0, bm.bmWidth * s, bm.bmHeight * s, a, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+    SelectObject(a, oa);
+    SelectObject(b, ob);
+    DeleteDC(a);
+    DeleteDC(b);
+    return out;
+}
+
+static HICON(WINAPI* Real_CreateIconIndirect)(PICONINFO);
+static HICON WINAPI Hook_CreateIconIndirect(PICONINFO ii) {
+    if (!ii || ii->fIcon || !ii->hbmMask || !FromGame(_ReturnAddress()) || FixOn("nocursorscale"))
+        return Real_CreateIconIndirect(ii);
+    ICONINFO big = *ii;
+    big.xHotspot *= S();
+    big.yHotspot *= S();
+    big.hbmMask = ScaleMaskBitmap(ii->hbmMask, S());  // monochrome cursors: AND over XOR, scaled together
+    big.hbmColor = ii->hbmColor ? ScaleColorBitmap(ii->hbmColor, S()) : nullptr;
+    HICON h = (big.hbmMask && (big.hbmColor || !ii->hbmColor)) ? Real_CreateIconIndirect(&big) : nullptr;
+    if (big.hbmMask) DeleteObject(big.hbmMask);  // CreateIconIndirect copies the bitmaps
+    if (big.hbmColor) DeleteObject(big.hbmColor);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        Log("input: game cursors are created at %dx (first: %s)", S(), h ? "ok" : "failed, original size used");
+    }
+    return h ? h : Real_CreateIconIndirect(ii);
+}
+
 // ---------------------------------------------------------------- window procedure
 
 static HWND g_subclassed = nullptr;
@@ -214,8 +282,9 @@ void InstallInputHooks() {
     n += Hook("SetWindowPos", &Hook_SetWindowPos, &Real_SetWindowPos);
     n += Hook("GetMessageW", &Hook_GetMessageW, &Real_GetMessageW);
     n += Hook("PeekMessageW", &Hook_PeekMessageW, &Real_PeekMessageW);
+    n += Hook("CreateIconIndirect", &Hook_CreateIconIndirect, &Real_CreateIconIndirect);
     s = MH_EnableHook(MH_ALL_HOOKS);
-    Log("input hooks: %d of 14 user32 functions hooked, enable %s; game exe %p-%p", n, MH_StatusToString(s),
+    Log("input hooks: %d of 15 user32 functions hooked, enable %s; game exe %p-%p", n, MH_StatusToString(s),
         (void*)g_exeBase, (void*)g_exeEnd);
 }
 
