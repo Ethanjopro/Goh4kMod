@@ -42,3 +42,19 @@ Ethan's go. Game folder untouched so far.
   sources that the game compiles itself. The soft-particle and SSAO sources divide SV_Position by
   GetDimensions() of the depth texture, not by a constant, which is good news for size-matched 2x.
   shader_cache in My Games holds just one file.
+
+### 2026-10-02 M1 build (not yet run in the game)
+- d3d11.dll proxy: 51 exports with the System32 ordinals. Two are implemented (D3D11CreateDevice and
+  D3D11CreateDeviceAndSwapChain); the rest are ml64 jump stubs that load System32\d3d11.dll on first use.
+  Only the exe's own device gets wrapped; DLL callers such as the Steam overlay get the real objects.
+- The forwarding wrappers are generated from the SDK headers by src/scripts/gen-wrappers.ps1:
+  Device5 (66 methods), Context4 (146) and SwapChain4 (38). The proxy logs to scratch/logs/ and writes
+  captures/status.txt about once a second. Settings live in config/goh4k.ini (Wrap, Scale, StatusMs).
+- build\proxytest.exe passed 21/21 checks: stub slow and fast paths, QI routing, deferred context,
+  Present, ResizeBuffers, and refcounts reaching 0.
+- src/scripts/test-gamefolder.ps1 ran deploy/uninstall against scratch\fakegame and passed 11/11:
+  backup and restore, game-managed files, stray files, and the LOG.md section.
+- build\drive\drive.exe (input plus desktop-duplication snaps) sits in its own folder so it never loads our
+  d3d11.dll. The desktop here is HDR (FP16 duplication), so previews clip highlights.
+- Finding: a DPI-unaware process here sees a 2560x1440 desktop at 96 DPI (Windows is at 150%). The game
+  is DPI-unaware too, so M1 will show what it reports at 4K fullscreen.
