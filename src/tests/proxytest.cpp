@@ -28,11 +28,17 @@ int main() {
     wchar_t dir[MAX_PATH];
     GetModuleFileNameW(nullptr, dir, MAX_PATH);
     *wcsrchr(dir, L'\\') = 0;
-    wchar_t proxyPath[MAX_PATH], sysPath[MAX_PATH];
+    wchar_t proxyPath[MAX_PATH], dxgiPath[MAX_PATH], sysPath[MAX_PATH];
     swprintf_s(proxyPath, L"%s\\d3d11.dll", dir);
+    swprintf_s(dxgiPath, L"%s\\dxgi.dll", dir);
     UINT n = GetSystemDirectoryW(sysPath, MAX_PATH);
     wcscpy_s(sysPath + n, MAX_PATH - n, L"\\d3d11.dll");
 
+    // Like the game: our dxgi.dll is loaded before anything else touches DXGI, so System32's d3d11.dll
+    // binds its dxgi imports to our stubs.
+    HMODULE dxgiProxy = LoadLibraryW(dxgiPath);
+    CHECK(dxgiProxy != nullptr, "load dxgi proxy %ls", dxgiPath);
+    if (!dxgiProxy) return 1;
     HMODULE proxy = LoadLibraryW(proxyPath);
     CHECK(proxy != nullptr, "load proxy %ls", proxyPath);
     if (!proxy) return 1;
@@ -78,16 +84,32 @@ int main() {
     scd.OutputWindow = hwnd;
     scd.Windowed = TRUE;
     scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    // The game's sequence: a factory from CreateDXGIFactory, D3D11CreateDeviceAndSwapChain on its adapter,
+    // that swapchain dropped, then the real swapchain made with IDXGIFactory::CreateSwapChain.
+    auto createFactory = (HRESULT(WINAPI*)(REFIID, void**))GetProcAddress(dxgiProxy, "CreateDXGIFactory");
+    IDXGIFactory* factory = nullptr;
+    HRESULT hr = createFactory ? createFactory(IID_PPV_ARGS(&factory)) : E_FAIL;
+    CHECK(SUCCEEDED(hr) && factory, "CreateDXGIFactory through the dxgi proxy (0x%08lx)", hr);
+    if (!factory) return 1;
+    IDXGIAdapter* adapter = nullptr;
+    factory->EnumAdapters(0, &adapter);
     auto create = (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)GetProcAddress(proxy, "D3D11CreateDeviceAndSwapChain");
     IDXGISwapChain* sc = nullptr;
     ID3D11Device* dev = nullptr;
     ID3D11DeviceContext* ctx = nullptr;
     D3D_FEATURE_LEVEL fl = {};
-    HRESULT hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &scd, &sc, &dev,
-                        &fl, &ctx);
+    hr = create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &scd, &sc, &dev, &fl, &ctx);
     CHECK(SUCCEEDED(hr) && sc && dev && ctx, "D3D11CreateDeviceAndSwapChain through the proxy (0x%08lx, fl 0x%x)", hr,
           (unsigned)fl);
     if (FAILED(hr)) return 1;
+    if (adapter) adapter->Release();
+    sc->SetFullscreenState(FALSE, nullptr);
+    sc->Release();
+    sc = nullptr;
+    hr = factory->CreateSwapChain(dev, &scd, &sc);
+    CHECK(SUCCEEDED(hr) && sc, "IDXGIFactory::CreateSwapChain with the wrapped device (0x%08lx)", hr);
+    if (FAILED(hr)) return 1;
+    factory->Release();
 
     // 3) Identity and QueryInterface routing.
     ID3D11Device* fromCtx = nullptr;

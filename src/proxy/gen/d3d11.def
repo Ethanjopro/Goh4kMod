@@ -52,3 +52,6 @@ EXPORTS
     EnableFeatureLevelUpgrade = Stub_EnableFeatureLevelUpgrade @13
     OpenAdapter10 = Stub_OpenAdapter10 @14
     OpenAdapter10_2 = Stub_OpenAdapter10_2 @15
+    Goh4k_CreateSwapChain
+    Goh4k_CreateSwapChainForHwnd
+    Goh4k_LogLine

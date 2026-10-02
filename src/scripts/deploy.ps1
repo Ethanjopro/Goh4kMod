@@ -8,7 +8,7 @@ Assert-GameNotRunning
 if (-not (Test-Path "$GameBin\call_to_arms.exe")) { throw "call_to_arms.exe not found in $GameBin" }
 if (-not (Test-Path $Baseline)) { throw "Baseline $Baseline is missing; take it before the first deploy." }
 
-$files = @(@{ Src = "$Root\build\d3d11.dll"; Name = 'd3d11.dll' })
+$files = @(@{ Src = "$Root\build\d3d11.dll"; Name = 'd3d11.dll' }, @{ Src = "$Root\build\dxgi.dll"; Name = 'dxgi.dll' })
 $records = New-Object 'Collections.Generic.List[object]'
 foreach ($r in @(Read-Deployed)) { $records.Add($r) }
 $logLines = @()

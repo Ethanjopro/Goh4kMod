@@ -2,6 +2,7 @@
 #pragma once
 
 #define GOH4K_EXPORT_COUNT 51
+#define GOH4K_REAL_DLL L"d3d11.dll"
 
 static const char* const kExportNames[GOH4K_EXPORT_COUNT] = {
     "CreateDirect3D11DeviceFromDXGIDevice",

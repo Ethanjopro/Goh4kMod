@@ -1,8 +1,9 @@
 @echo off
 rem Goh4kMod build: sets up the 64-bit MSVC tools itself, so it works from any shell.
 rem Output is errors and warnings only; full compiler logs land in build\obj\*.txt.
-rem Usage: build.cmd           build everything (proxy, drive, tests)
-rem        build.cmd proxy     build build\d3d11.dll
+rem Usage: build.cmd           build everything (proxy, dxgi, drive, tests)
+rem        build.cmd proxy     build build\d3d11.dll (the main proxy: wrappers, logging, config)
+rem        build.cmd dxgi      build build\dxgi.dll (wraps the game's DXGI factory, hands swapchains to d3d11.dll)
 rem        build.cmd drive     build build\drive\drive.exe (input + screenshot helper; its own folder
 rem                            so it never picks up our d3d11.dll)
 rem        build.cmd tests     build build\proxytest.exe
@@ -25,9 +26,11 @@ set "CFLAGS=/nologo /c /std:c++17 /O2 /MT /W4 /EHsc /Zi /DUNICODE /D_UNICODE"
 
 if /i "%~1"=="check" goto check
 if /i "%~1"=="proxy" goto proxy
+if /i "%~1"=="dxgi" goto dxgi
 if /i "%~1"=="drive" goto drive
 if /i "%~1"=="tests" goto tests
 call :proxy || exit /b 1
+call :dxgi || exit /b 1
 call :drive || exit /b 1
 call :tests || exit /b 1
 echo Build OK.
@@ -49,6 +52,23 @@ set "RC=%ERRORLEVEL%"
 findstr /v /c:"Creating library" build\obj\link-proxy.txt
 if not "%RC%"=="0" exit /b 1
 echo built build\d3d11.dll
+exit /b 0
+
+:dxgi
+if not exist build\obj\dxgi mkdir build\obj\dxgi
+ml64 /nologo /c /Fobuild\obj\dxgi\exports.obj src\dxgi\gen\exports.asm > build\obj\ml64-dxgi.txt 2>&1
+if errorlevel 1 (type build\obj\ml64-dxgi.txt & exit /b 1)
+rc /nologo /fo build\obj\dxgi\version.res src\dxgi\version.rc > build\obj\rc-dxgi.txt 2>&1
+if errorlevel 1 (type build\obj\rc-dxgi.txt & exit /b 1)
+cl %CFLAGS% /Fobuild\obj\dxgi\ /Fdbuild\obj\dxgi\vc.pdb src\dxgi\*.cpp > build\obj\cl-dxgi.txt 2>&1
+set "RC=%ERRORLEVEL%"
+findstr /c:": error" /c:": warning" /c:"fatal error" build\obj\cl-dxgi.txt
+if not "%RC%"=="0" exit /b 1
+link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /OUT:build\dxgi.dll /PDB:build\dxgi.pdb /DEF:src\dxgi\gen\dxgi.def build\obj\dxgi\*.obj build\obj\dxgi\version.res > build\obj\link-dxgi.txt 2>&1
+set "RC=%ERRORLEVEL%"
+findstr /v /c:"Creating library" build\obj\link-dxgi.txt
+if not "%RC%"=="0" exit /b 1
+echo built build\dxgi.dll
 exit /b 0
 
 :drive

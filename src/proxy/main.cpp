@@ -1,38 +1,17 @@
-// Goh4kMod d3d11.dll proxy: DLL entry, real-DLL loading, and the two exports we implement.
-// Every other export is an ml64 jump stub (gen/exports.asm) through g_exports.
+// Goh4kMod d3d11.dll proxy: DLL entry, the d3d11 exports we implement, and the entry points our dxgi.dll
+// proxy calls. Every other export is an ml64 jump stub (gen/exports.asm) through g_exports.
 #include "wrappers.h"
 #include "gen/exports_gen.h"
+#include "../shared/real_exports.h"
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
 
 using namespace goh4k;
 
-extern "C" void* g_exports[GOH4K_EXPORT_COUNT] = {};
-static INIT_ONCE g_resolveOnce = INIT_ONCE_STATIC_INIT;
-
-// Stand-in for an export the system DLL doesn't have; returning E_NOTIMPL is safe for any x64 signature.
-static HRESULT WINAPI MissingExport() { return E_NOTIMPL; }
-
-static BOOL CALLBACK LoadReal(PINIT_ONCE, PVOID, PVOID*) {
-    wchar_t path[MAX_PATH];
-    UINT n = GetSystemDirectoryW(path, MAX_PATH);
-    wcscpy_s(path + n, MAX_PATH - n, L"\\d3d11.dll");
-    HMODULE real = LoadLibraryW(path);
+static void OnRealLoaded(const wchar_t* path, HMODULE real, int missing) {
     if (!real) Log("FATAL: LoadLibrary(%ls) failed, error %lu", path, GetLastError());
-    int missing = 0;
-    for (int i = 0; i < GOH4K_EXPORT_COUNT; ++i) {
-        void* p = real ? (void*)GetProcAddress(real, kExportNames[i]) : nullptr;
-        if (!p) {
-            ++missing;
-            p = (void*)&MissingExport;
-        }
-        g_exports[i] = p;
-    }
     Log("real d3d11.dll: %ls, %d exports resolved, %d missing", path, GOH4K_EXPORT_COUNT - missing, missing);
-    return TRUE;
 }
-
-extern "C" void ResolveExports() { InitOnceExecuteOnce(&g_resolveOnce, LoadReal, nullptr, nullptr); }
 
 static const char* DriverName(D3D_DRIVER_TYPE t) {
     switch (t) {
@@ -108,6 +87,51 @@ extern "C" HRESULT WINAPI Proxy_D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DR
     }
     return hr;
 }
+
+// ---------------------------------------------------------------- called by our dxgi.dll proxy
+// The game creates its real swapchain through IDXGIFactory::CreateSwapChain, not through
+// D3D11CreateDeviceAndSwapChain. Our dxgi proxy wraps the factory and hands those calls here, so the
+// swapchain gets wrapped with the device wrapper it belongs to. DXGI itself is given the real device.
+
+static WrappedDevice* AsWrappedDevice(IUnknown* p) {  // AddRef'd, or null if it isn't ours
+    WrappedDevice* wd = nullptr;
+    if (p && SUCCEEDED(p->QueryInterface(IID_Goh4kWrappedDevice, (void**)&wd))) return wd;
+    return nullptr;
+}
+
+extern "C" HRESULT WINAPI Goh4k_CreateSwapChain(IDXGIFactory* factory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
+                                                IDXGISwapChain** ppSwapChain) {
+    WrappedDevice* wd = AsWrappedDevice(pDevice);
+    Log("IDXGIFactory::CreateSwapChain, %s device", wd ? "our wrapped" : "a foreign");
+    if (pDesc) Log("  requested swapchain: %s", DescribeSwapChainDesc(*pDesc).c_str());
+    HRESULT hr = factory->CreateSwapChain(wd ? (IUnknown*)wd->Real() : pDevice, pDesc, ppSwapChain);
+    Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr) && wd && g_cfg.wrap && ppSwapChain && *ppSwapChain)
+        *ppSwapChain = new WrappedSwapChain(*ppSwapChain, wd);
+    if (wd) wd->Release();
+    return hr;
+}
+
+extern "C" HRESULT WINAPI Goh4k_CreateSwapChainForHwnd(IDXGIFactory2* factory, IUnknown* pDevice, HWND hWnd,
+                                                       const DXGI_SWAP_CHAIN_DESC1* pDesc,
+                                                       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+                                                       IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
+    WrappedDevice* wd = AsWrappedDevice(pDevice);
+    Log("IDXGIFactory2::CreateSwapChainForHwnd, %s device", wd ? "our wrapped" : "a foreign");
+    if (pDesc)
+        Log("  requested: %ux%u fmt=%d msaa=%u buffers=%u scaling=%d effect=%d flags=0x%x windowed=%d", pDesc->Width,
+            pDesc->Height, (int)pDesc->Format, pDesc->SampleDesc.Count, pDesc->BufferCount, (int)pDesc->Scaling,
+            (int)pDesc->SwapEffect, pDesc->Flags, pFullscreenDesc ? pFullscreenDesc->Windowed : 1);
+    HRESULT hr = factory->CreateSwapChainForHwnd(wd ? (IUnknown*)wd->Real() : pDevice, hWnd, pDesc, pFullscreenDesc,
+                                                 pRestrictToOutput, ppSwapChain);
+    Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr) && wd && g_cfg.wrap && ppSwapChain && *ppSwapChain)
+        *ppSwapChain = new WrappedSwapChain(*ppSwapChain, wd);
+    if (wd) wd->Release();
+    return hr;
+}
+
+extern "C" void WINAPI Goh4k_LogLine(const char* line) { Log("%s", line); }
 
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {

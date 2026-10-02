@@ -82,6 +82,11 @@ WrappedDevice::~WrappedDevice() {
 
 HRESULT STDMETHODCALLTYPE WrappedDevice::QueryInterface(REFIID riid, void** ppv) {
     if (!ppv) return E_POINTER;
+    if (riid == IID_Goh4kWrappedDevice) {
+        AddRef();
+        *ppv = this;
+        return S_OK;
+    }
     int need = -1;
     if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D11Device))
         need = 0;

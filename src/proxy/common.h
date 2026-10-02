@@ -7,6 +7,10 @@
 #include <dxgi1_6.h>
 #include <string>
 
+// Answered only by our WrappedDevice's QueryInterface (returns the wrapper itself), so code that is handed
+// an ID3D11Device can tell whether it is ours.
+static const GUID IID_Goh4kWrappedDevice = {0x7d1b6c9e, 0x3f0a, 0x4c55, {0x9a, 0x1e, 0x6b, 0x2f, 0x8d, 0x4c, 0x0a, 0x17}};
+
 namespace goh4k {
 
 // config/goh4k.ini, [proxy] section. Read once at DLL load; changing it needs a game restart, not a redeploy.
