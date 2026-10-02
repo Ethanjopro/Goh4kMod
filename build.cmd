@@ -4,8 +4,8 @@ rem Output is errors and warnings only; full compiler logs land in build\obj\*.t
 rem Usage: build.cmd           build everything (proxy, dxgi, drive, tests)
 rem        build.cmd proxy     build build\d3d11.dll (the main proxy: wrappers, logging, config)
 rem        build.cmd dxgi      build build\dxgi.dll (wraps the game's DXGI factory, hands swapchains to d3d11.dll)
-rem        build.cmd drive     build build\drive\drive.exe (input + screenshot helper; its own folder
-rem                            so it never picks up our d3d11.dll)
+rem        build.cmd drive     build build\drive\drive.exe (input + screenshots) and build\drive\imgtool.exe
+rem                            (crop/side/diff); their own folder so they never pick up our d3d11.dll
 rem        build.cmd tests     build build\proxytest.exe
 rem        build.cmd check     compile a tiny test program and confirm the output is x64
 setlocal
@@ -73,16 +73,20 @@ exit /b 0
 
 :drive
 if not exist build\obj\drive mkdir build\obj\drive
-cl %CFLAGS% /Fobuild\obj\drive\ /Fdbuild\obj\drive\vc.pdb src\drive\drive.cpp > build\obj\cl-drive.txt 2>&1
+cl %CFLAGS% /Fobuild\obj\drive\ /Fdbuild\obj\drive\vc.pdb src\drive\drive.cpp src\drive\imgtool.cpp > build\obj\cl-drive.txt 2>&1
 set "RC=%ERRORLEVEL%"
 findstr /c:": error" /c:": warning" /c:"fatal error" build\obj\cl-drive.txt
 if not "%RC%"=="0" exit /b 1
 if not exist build\drive mkdir build\drive
-link /nologo /DEBUG /OUT:build\drive\drive.exe /PDB:build\drive\drive.pdb build\obj\drive\*.obj user32.lib d3d11.lib dxgi.lib ole32.lib windowscodecs.lib > build\obj\link-drive.txt 2>&1
+link /nologo /DEBUG /OUT:build\drive\drive.exe /PDB:build\drive\drive.pdb build\obj\drive\drive.obj user32.lib d3d11.lib dxgi.lib ole32.lib windowscodecs.lib > build\obj\link-drive.txt 2>&1
 set "RC=%ERRORLEVEL%"
 type build\obj\link-drive.txt
 if not "%RC%"=="0" exit /b 1
-echo built build\drive\drive.exe
+link /nologo /DEBUG /OUT:build\drive\imgtool.exe /PDB:build\drive\imgtool.pdb build\obj\drive\imgtool.obj > build\obj\link-imgtool.txt 2>&1
+set "RC=%ERRORLEVEL%"
+type build\obj\link-imgtool.txt
+if not "%RC%"=="0" exit /b 1
+echo built build\drive\drive.exe and imgtool.exe
 exit /b 0
 
 :tests

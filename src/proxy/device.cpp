@@ -1,5 +1,8 @@
-// WrappedDevice and WrappedContext: pure forwarding for now (M1). M3 adds the 2x rules here.
+// WrappedDevice and WrappedContext core: identity, QueryInterface routing, contexts, and resource/shader
+// creation (recorded for stats and traces). M3 adds the 2x rules here.
 #include "wrappers.h"
+#include "diag.h"
+#include <atomic>
 
 namespace goh4k {
 
@@ -24,7 +27,9 @@ static const IID* const kContextIds[] = {&__uuidof(ID3D11DeviceContext1), &__uui
 
 WrappedContext::WrappedContext(ID3D11DeviceContext* real, WrappedDevice* device, bool immediate)
     : m_device(device), m_immediate(immediate) {
+    static std::atomic<int> nextDeferredId{1};
     m_real = MostDerived<ID3D11DeviceContext4>(real, kContextIds, &m_level);
+    if (!immediate) m_id = nextDeferredId++;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedContext::QueryInterface(REFIID riid, void** ppv) {
@@ -185,6 +190,53 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDeferredContext3(UINT flags, ID3D
     ID3D11DeviceContext3* real = nullptr;
     HRESULT hr = m_real->CreateDeferredContext3(flags, &real);
     *pp = (SUCCEEDED(hr) && real) ? WrapDeferred(real) : real;
+    return hr;
+}
+
+// ---------------------------------------------------------------- resources and shaders
+
+HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_DESC* pDesc,
+                                                         const D3D11_SUBRESOURCE_DATA* pInitialData,
+                                                         ID3D11Texture2D** ppTexture2D) {
+    HRESULT hr = m_real->CreateTexture2D(pDesc, pInitialData, ppTexture2D);
+    if (SUCCEEDED(hr) && pDesc && ppTexture2D) RecordTextureCreate(*pDesc, pInitialData != nullptr);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D1(const D3D11_TEXTURE2D_DESC1* pDesc1,
+                                                          const D3D11_SUBRESOURCE_DATA* pInitialData,
+                                                          ID3D11Texture2D1** ppTexture2D) {
+    HRESULT hr = m_real->CreateTexture2D1(pDesc1, pInitialData, ppTexture2D);
+    if (SUCCEEDED(hr) && pDesc1 && ppTexture2D) {
+        D3D11_TEXTURE2D_DESC d;
+        memcpy(&d, pDesc1, sizeof(d));  // DESC1 = DESC + TextureLayout
+        RecordTextureCreate(d, pInitialData != nullptr);
+    }
+    return hr;
+}
+
+#define SHADER_CREATE(Method, Type, kind)                                                                          \
+    HRESULT STDMETHODCALLTYPE WrappedDevice::Method(const void* code, SIZE_T len, ID3D11ClassLinkage* linkage,      \
+                                                    Type** pp) {                                                    \
+        HRESULT hr = m_real->Method(code, len, linkage, pp);                                                        \
+        if (SUCCEEDED(hr) && pp && *pp) RegisterShader(*pp, code, len, kind);                                       \
+        return hr;                                                                                                  \
+    }
+SHADER_CREATE(CreateVertexShader, ID3D11VertexShader, 'v')
+SHADER_CREATE(CreatePixelShader, ID3D11PixelShader, 'p')
+SHADER_CREATE(CreateGeometryShader, ID3D11GeometryShader, 'g')
+SHADER_CREATE(CreateHullShader, ID3D11HullShader, 'h')
+SHADER_CREATE(CreateDomainShader, ID3D11DomainShader, 'd')
+SHADER_CREATE(CreateComputeShader, ID3D11ComputeShader, 'c')
+#undef SHADER_CREATE
+
+HRESULT STDMETHODCALLTYPE WrappedDevice::CreateGeometryShaderWithStreamOutput(
+    const void* code, SIZE_T len, const D3D11_SO_DECLARATION_ENTRY* pSODeclaration, UINT NumEntries,
+    const UINT* pBufferStrides, UINT NumStrides, UINT RasterizedStream, ID3D11ClassLinkage* linkage,
+    ID3D11GeometryShader** pp) {
+    HRESULT hr = m_real->CreateGeometryShaderWithStreamOutput(code, len, pSODeclaration, NumEntries, pBufferStrides,
+                                                              NumStrides, RasterizedStream, linkage, pp);
+    if (SUCCEEDED(hr) && pp && *pp) RegisterShader(*pp, code, len, 'g');
     return hr;
 }
 

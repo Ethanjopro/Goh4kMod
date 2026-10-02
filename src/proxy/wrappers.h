@@ -10,6 +10,8 @@
 #include "gen/fwd_device.h"
 #include "gen/fwd_context.h"
 #include "gen/fwd_swapchain.h"
+#include <string>
+#include <vector>
 
 namespace goh4k {
 
@@ -23,12 +25,63 @@ public:
     ULONG STDMETHODCALLTYPE Release() override;
     void STDMETHODCALLTYPE GetDevice(ID3D11Device** ppDevice) override;
 
+    // Actions: recorded while a trace is active (context.cpp).
+    void STDMETHODCALLTYPE DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) override;
+    void STDMETHODCALLTYPE Draw(UINT VertexCount, UINT StartVertexLocation) override;
+    void STDMETHODCALLTYPE DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation,
+                                                INT BaseVertexLocation, UINT StartInstanceLocation) override;
+    void STDMETHODCALLTYPE DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation,
+                                         UINT StartInstanceLocation) override;
+    void STDMETHODCALLTYPE DrawAuto() override;
+    void STDMETHODCALLTYPE DrawIndexedInstancedIndirect(ID3D11Buffer* pBufferForArgs, UINT AlignedByteOffsetForArgs) override;
+    void STDMETHODCALLTYPE DrawInstancedIndirect(ID3D11Buffer* pBufferForArgs, UINT AlignedByteOffsetForArgs) override;
+    void STDMETHODCALLTYPE Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override;
+    void STDMETHODCALLTYPE DispatchIndirect(ID3D11Buffer* pBufferForArgs, UINT AlignedByteOffsetForArgs) override;
+    void STDMETHODCALLTYPE CopySubresourceRegion(ID3D11Resource* pDstResource, UINT DstSubresource, UINT DstX, UINT DstY,
+                                                 UINT DstZ, ID3D11Resource* pSrcResource, UINT SrcSubresource,
+                                                 const D3D11_BOX* pSrcBox) override;
+    void STDMETHODCALLTYPE CopySubresourceRegion1(ID3D11Resource* pDstResource, UINT DstSubresource, UINT DstX, UINT DstY,
+                                                  UINT DstZ, ID3D11Resource* pSrcResource, UINT SrcSubresource,
+                                                  const D3D11_BOX* pSrcBox, UINT CopyFlags) override;
+    void STDMETHODCALLTYPE CopyResource(ID3D11Resource* pDstResource, ID3D11Resource* pSrcResource) override;
+    void STDMETHODCALLTYPE UpdateSubresource(ID3D11Resource* pDstResource, UINT DstSubresource, const D3D11_BOX* pDstBox,
+                                             const void* pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch) override;
+    void STDMETHODCALLTYPE UpdateSubresource1(ID3D11Resource* pDstResource, UINT DstSubresource, const D3D11_BOX* pDstBox,
+                                              const void* pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch,
+                                              UINT CopyFlags) override;
+    void STDMETHODCALLTYPE ClearRenderTargetView(ID3D11RenderTargetView* pRenderTargetView,
+                                                 const FLOAT ColorRGBA[4]) override;
+    void STDMETHODCALLTYPE ClearUnorderedAccessViewUint(ID3D11UnorderedAccessView* pUnorderedAccessView,
+                                                        const UINT Values[4]) override;
+    void STDMETHODCALLTYPE ClearUnorderedAccessViewFloat(ID3D11UnorderedAccessView* pUnorderedAccessView,
+                                                         const FLOAT Values[4]) override;
+    void STDMETHODCALLTYPE ClearDepthStencilView(ID3D11DepthStencilView* pDepthStencilView, UINT ClearFlags, FLOAT Depth,
+                                                 UINT8 Stencil) override;
+    void STDMETHODCALLTYPE ClearView(ID3D11View* pView, const FLOAT Color[4], const D3D11_RECT* pRect,
+                                     UINT NumRects) override;
+    void STDMETHODCALLTYPE GenerateMips(ID3D11ShaderResourceView* pShaderResourceView) override;
+    void STDMETHODCALLTYPE ResolveSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
+                                              ID3D11Resource* pSrcResource, UINT SrcSubresource,
+                                              DXGI_FORMAT Format) override;
+    void STDMETHODCALLTYPE ExecuteCommandList(ID3D11CommandList* pCommandList, BOOL RestoreContextState) override;
+    HRESULT STDMETHODCALLTYPE FinishCommandList(BOOL RestoreDeferredContextState,
+                                                ID3D11CommandList** ppCommandList) override;
+
     int Level() const { return m_level; }
+    bool IsImmediate() const { return m_immediate; }
+    int Id() const { return m_id; }
+    ID3D11DeviceContext4* RealCtx() const { return m_real; }
+    WrappedDevice* Device() const { return m_device; }
+
+    // Trace buffer of a deferred context (diag.cpp); only touched by the thread recording on it.
+    std::vector<std::string> traceLines;
+    int traceGen = -1;
 
 private:
     WrappedDevice* m_device;
     bool m_immediate;
     int m_level = 0;  // highest ID3D11DeviceContextN the real object supports
+    int m_id = 0;     // 0 = immediate, 1.. = deferred contexts in creation order
 };
 
 class WrappedDevice final : public Fwd_ID3D11Device5 {
@@ -47,6 +100,34 @@ public:
     HRESULT STDMETHODCALLTYPE CreateDeferredContext1(UINT ContextFlags, ID3D11DeviceContext1** ppDeferredContext) override;
     HRESULT STDMETHODCALLTYPE CreateDeferredContext2(UINT ContextFlags, ID3D11DeviceContext2** ppDeferredContext) override;
     HRESULT STDMETHODCALLTYPE CreateDeferredContext3(UINT ContextFlags, ID3D11DeviceContext3** ppDeferredContext) override;
+
+    // Resource and shader creation: recorded for stats/trace (device.cpp). M3 adds the 2x rules here.
+    HRESULT STDMETHODCALLTYPE CreateTexture2D(const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData,
+                                              ID3D11Texture2D** ppTexture2D) override;
+    HRESULT STDMETHODCALLTYPE CreateTexture2D1(const D3D11_TEXTURE2D_DESC1* pDesc1,
+                                               const D3D11_SUBRESOURCE_DATA* pInitialData,
+                                               ID3D11Texture2D1** ppTexture2D) override;
+    HRESULT STDMETHODCALLTYPE CreateVertexShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
+                                                 ID3D11ClassLinkage* pClassLinkage,
+                                                 ID3D11VertexShader** ppVertexShader) override;
+    HRESULT STDMETHODCALLTYPE CreatePixelShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
+                                                ID3D11ClassLinkage* pClassLinkage,
+                                                ID3D11PixelShader** ppPixelShader) override;
+    HRESULT STDMETHODCALLTYPE CreateGeometryShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
+                                                   ID3D11ClassLinkage* pClassLinkage,
+                                                   ID3D11GeometryShader** ppGeometryShader) override;
+    HRESULT STDMETHODCALLTYPE CreateGeometryShaderWithStreamOutput(
+        const void* pShaderBytecode, SIZE_T BytecodeLength, const D3D11_SO_DECLARATION_ENTRY* pSODeclaration,
+        UINT NumEntries, const UINT* pBufferStrides, UINT NumStrides, UINT RasterizedStream,
+        ID3D11ClassLinkage* pClassLinkage, ID3D11GeometryShader** ppGeometryShader) override;
+    HRESULT STDMETHODCALLTYPE CreateHullShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
+                                               ID3D11ClassLinkage* pClassLinkage, ID3D11HullShader** ppHullShader) override;
+    HRESULT STDMETHODCALLTYPE CreateDomainShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
+                                                 ID3D11ClassLinkage* pClassLinkage,
+                                                 ID3D11DomainShader** ppDomainShader) override;
+    HRESULT STDMETHODCALLTYPE CreateComputeShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
+                                                  ID3D11ClassLinkage* pClassLinkage,
+                                                  ID3D11ComputeShader** ppComputeShader) override;
 
     WrappedContext* Immediate() { return m_immediate; }
     ID3D11Device* Real() { return m_real; }
@@ -93,6 +174,7 @@ private:
     LONG64 m_frames = 0;
     LONG64 m_framesAtStatus = 0;
     ULONGLONG m_statusTick = 0;
+    double m_fps = 0;
     int m_colorSpace = -1;
     bool m_loggedBuffer = false;
 };

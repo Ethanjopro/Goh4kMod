@@ -1,8 +1,8 @@
 # Goh4kMod log
 
 ## Status
-M1 done (2026-10-02): d3d11.dll + dxgi.dll pass-through proxies, deploy/uninstall, drive.exe. Next: M2
-(built-in capture + trace). Working autonomously under /goal. Game folder currently clean (uninstalled).
+M1+M2 done (2026-10-02). Next: M3 (2x on the main menu). Game set to 1920x1080 fullscreen (was 3840x2160).
+Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED during development.
 
 ## Gotchas (symptom -> cause -> fix)
 - vcvars64.bat prints "'vswhere.exe' is not recognized" -> it calls vswhere by name internally -> harmless;
@@ -32,6 +32,8 @@ M1 done (2026-10-02): d3d11.dll + dxgi.dll pass-through proxies, deploy/uninstal
 - 2026-10-02 12:15 uninstall: removed d3d11.dll
 - 2026-10-02 12:15 uninstall: removed dxgi.dll
 - 2026-10-02 12:15 uninstall check: folder matches the baseline (26 files)
+- 2026-10-02 12:26 deploy: d3d11.dll sha256 10B5A6EE919A (new file)
+- 2026-10-02 12:26 deploy: dxgi.dll sha256 FBF0679A1C16 (new file)
 
 ## Cleanup
 (none yet; anything a tool writes outside the project folder goes here)
@@ -108,3 +110,33 @@ M1 done (2026-10-02): d3d11.dll + dxgi.dll pass-through proxies, deploy/uninstal
   144 dpi); in session 1 it was unaware at the same point. Cause unknown. M3 will set per-monitor-v2
   awareness itself at DLL load so the mouse math doesn't depend on it.
 - Ethan set /goal for autonomous work: no per-session asking from here on (see memory).
+
+### 2026-10-02 M2: built-in capture and diagnostics, DONE
+- Proxy (diag.cpp, context.cpp) adds:
+  - captures/request.txt, polled 4x a second: capture, trace, dumprt, stats, fix, dumpshader.
+  - Ctrl+Shift+F11 hotkey.
+  - Backbuffer capture: MSAA resolve, staging copy, WIC PNG plus 1/4 preview and sidecar, written on a worker thread.
+  - One-frame traces: every draw/dispatch/clear/copy with its RTs, viewport, scissor, shader ids and SRVs. Deferred-context command lists are spliced in at ExecuteCommandList.
+  - dumprt of any event's RT0 or depth target.
+  - Texture-creation stats.
+  - Shader registry: the DXBC checksum is the id; bytecode is kept for dumpshader.
+- Tools: src/shared/image.h (format conversion and PNG); build\drive\imgtool.exe (crop, side, resize, diff).
+- proxytest checks the request path end to end against an 8x-MSAA BGRA8 swapchain like the game's.
+- In game (4K, Wrap=1):
+  - Main menu capture is correct at 3840x2160, resolved from 8x MSAA. The Steam FPS overlay is absent, as expected.
+  - The hotkey works. The trace shows 87 events.
+  - Mission trace: 5746 events at 149 fps with the trace off.
+- References for M3/M4 in captures/:
+  - Native 4K: 20261002-122640-menu*, 20261002-122821-mission*.
+  - Native 1080p: 20261002-123039-menu1080*, 20261002-123243-mission1080*.
+- Switched the game to 1920x1080 fullscreen through its Options menu (it shows a confirm dialog with a
+  timeout). options.set differs from the backup only in `mode`; saves are unchanged.
+- The menu trace shows a 2D UI only:
+  - 3840x2160 x8 backbuffer and depth; viewport is always the full screen; no scissor anywhere.
+  - Small offscreen label RTs (36x22, 800x288) are drawn with the stale full-screen viewport.
+  - The 1920x1080 menu art is uploaded with UpdateSubresource and then CopyResource'd.
+  - So scale only RT/DS-bound screen-size textures, and re-evaluate the viewport on OMSetRenderTargets.
+- 1080p UI navigation (differs from 4K):
+  SINGLEPLAYER 640,652 > CAMPAIGN 536,194 > SELECT CAMPAIGN 536,290 > USSR 1274,448 > ZA RODINU 536,194 >
+  ABSOLUTE ZERO 534,172 > Easy 436,886. CONTINUE 1840,38. In the game menu, EXIT 958,658; confirm YES
+  1028,597. Top bar: HOME 480,24, EXIT 1438,24. Options: top bar OPTIONS.

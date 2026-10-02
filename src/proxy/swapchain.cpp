@@ -1,6 +1,8 @@
-// WrappedSwapChain: forwards everything, counts frames, logs size/mode changes and keeps
-// captures/status.txt current so a session can see the game's state without reading logs.
+// WrappedSwapChain: forwards everything, counts frames, logs size/mode changes, keeps captures/status.txt
+// current so a session can see the game's state without reading logs, and runs the diagnostics around
+// Present (diag.cpp).
 #include "wrappers.h"
+#include "diag.h"
 
 namespace goh4k {
 
@@ -70,6 +72,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetBuffer(UINT Buffer, REFIID riid, 
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::Present(UINT SyncInterval, UINT Flags) {
+    if (!(Flags & DXGI_PRESENT_TEST)) DiagBeforePresent(m_real, m_device, m_frames + 1);
     HRESULT hr = m_real->Present(SyncInterval, Flags);
     AfterPresent(hr, Flags);
     return hr;
@@ -77,6 +80,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::Present(UINT SyncInterval, UINT Flag
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                      const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    if (!(PresentFlags & DXGI_PRESENT_TEST)) DiagBeforePresent(m_real, m_device, m_frames + 1);
     HRESULT hr = m_real->Present1(SyncInterval, PresentFlags, pPresentParameters);
     AfterPresent(hr, PresentFlags);
     return hr;
@@ -85,6 +89,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::Present1(UINT SyncInterval, UINT Pre
 void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     if (flags & DXGI_PRESENT_TEST) return;
     ++m_frames;
+    DiagAfterPresent(m_real, m_device, m_frames, m_fps);
     InterlockedIncrement64(&g_totalFrames);
     static HRESULT lastLogged = S_OK;
     if (hr != lastLogged) {
@@ -99,6 +104,7 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
 void WrappedSwapChain::WriteStatus(ULONGLONG now) {
     double fps = 0;
     if (m_statusTick) fps = double(m_frames - m_framesAtStatus) * 1000.0 / double(now - m_statusTick);
+    m_fps = fps;
     m_statusTick = now;
     m_framesAtStatus = m_frames;
 

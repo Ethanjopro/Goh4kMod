@@ -77,8 +77,8 @@ int main() {
     DXGI_SWAP_CHAIN_DESC scd = {};
     scd.BufferDesc.Width = 640;
     scd.BufferDesc.Height = 360;
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.SampleDesc.Count = 1;
+    scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;  // like the game: BGRA8 with MSAA on the backbuffer
+    scd.SampleDesc.Count = 8;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 1;
     scd.OutputWindow = hwnd;
@@ -151,9 +151,30 @@ int main() {
     CHECK(fromDef == dev, "deferred context->GetDevice returns the wrapped device");
     if (fromDef) fromDef->Release();
 
-    // 5) Frames, a resize in the middle.
+    // 5) Frames, a resize in the middle, and diagnostics requests through captures\request.txt.
+    wchar_t root[MAX_PATH];
+    wcscpy_s(root, dir);
+    *wcsrchr(root, L'\\') = 0;  // build\ -> project root
+    wchar_t capDir[MAX_PATH], reqPath[MAX_PATH];
+    swprintf_s(capDir, L"%s\\captures", root);
+    swprintf_s(reqPath, L"%s\\request.txt", capDir);
     int presented = 0;
-    for (int frame = 0; frame < 120; ++frame) {
+    for (int frame = 0; frame < 240; ++frame) {
+        if (frame == 90) {
+            const char req[] = "capture ptest\r\ntrace ptest\r\nstats ptest\r\nfix ptestfix on\r\n";
+            HANDLE h = CreateFileW(reqPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD w = 0;
+            WriteFile(h, req, sizeof(req) - 1, &w, nullptr);
+            CloseHandle(h);
+        }
+        if (frame == 170) {
+            const char req[] = "dumprt 1 ptestdump\r\n";
+            HANDLE h = CreateFileW(reqPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD w = 0;
+            WriteFile(h, req, sizeof(req) - 1, &w, nullptr);
+            CloseHandle(h);
+        }
+        Sleep(6);
         if (frame == 60) {
             hr = sc->ResizeBuffers(0, 800, 450, DXGI_FORMAT_UNKNOWN, 0);
             CHECK(SUCCEEDED(hr), "ResizeBuffers to 800x450 (0x%08lx)", hr);
@@ -181,7 +202,40 @@ int main() {
         hr = sc->Present(0, 0);
         if (SUCCEEDED(hr)) ++presented;
     }
-    CHECK(presented == 120, "120 Presents succeeded (%d)", presented);
+    CHECK(presented == 240, "240 Presents succeeded (%d)", presented);
+
+    // Diagnostics outputs (PNGs are written on a worker thread).
+    Sleep(2000);
+    auto found = [&](const wchar_t* pattern) {
+        wchar_t p[MAX_PATH];
+        swprintf_s(p, L"%s\\%s", capDir, pattern);
+        WIN32_FIND_DATAW fd;
+        HANDLE f = FindFirstFileW(p, &fd);
+        if (f == INVALID_HANDLE_VALUE) return 0ull;
+        FindClose(f);
+        return ((unsigned long long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+    };
+    CHECK(GetFileAttributesW(reqPath) == INVALID_FILE_ATTRIBUTES, "request.txt consumed");
+    CHECK(found(L"*-ptest.png") > 1000, "capture PNG written (MSAA backbuffer resolved)");
+    CHECK(found(L"*-ptest-preview.png") > 0 && found(L"*-ptest.txt") > 0, "preview and sidecar written");
+    CHECK(found(L"*-ptest-trace.txt") > 200, "trace written");
+    CHECK(found(L"*-ptest-stats.txt") > 100, "stats written");
+    CHECK(found(L"*-ptestdump-e1-rt0.png") > 1000, "dumprt PNG written for event #1");
+    // Clean up the test's images (traces and stats stay for inspection).
+    {
+        wchar_t p[MAX_PATH];
+        swprintf_s(p, L"%s\\*-ptest*", capDir);
+        WIN32_FIND_DATAW fd;
+        HANDLE f = FindFirstFileW(p, &fd);
+        if (f != INVALID_HANDLE_VALUE) {
+            do {
+                wchar_t full[MAX_PATH];
+                swprintf_s(full, L"%s\\%s", capDir, fd.cFileName);
+                if (!wcsstr(fd.cFileName, L"trace") && !wcsstr(fd.cFileName, L"stats")) DeleteFileW(full);
+            } while (FindNextFileW(f, &fd));
+            FindClose(f);
+        }
+    }
 
     // 6) Release everything; the device must reach 0.
     if (def) def->Release();
