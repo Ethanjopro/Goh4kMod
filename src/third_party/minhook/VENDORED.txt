@@ -1,0 +1,4 @@
+MinHook v1.3.3 (https://github.com/TsudaKageyu/minhook/releases/tag/v1.3.3), BSD-2-Clause, see LICENSE.txt.
+Vendored unmodified: src/*.c|h, src/hde/hde64.* + pstdint.h + table64.h (x64 only), include/MinHook.h.
+Source zip sha256 7C20D5101B50FB83296F3A3EE3889B0FB52A969C445FE41BC6F810853CC271B7.
+Compiled into d3d11.dll for the user32 mouse/window hooks only (approved by Ethan 2026-10-02).

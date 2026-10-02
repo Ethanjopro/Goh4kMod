@@ -2,6 +2,7 @@
 // creation (recorded for stats and traces). M3 adds the 2x rules here.
 #include "wrappers.h"
 #include "diag.h"
+#include "scale.h"
 #include <atomic>
 
 namespace goh4k {
@@ -198,6 +199,19 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDeferredContext3(UINT flags, ID3D
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_DESC* pDesc,
                                                          const D3D11_SUBRESOURCE_DATA* pInitialData,
                                                          ID3D11Texture2D** ppTexture2D) {
+    if (pDesc && ppTexture2D && WantScaled(*pDesc, pInitialData != nullptr)) {
+        D3D11_TEXTURE2D_DESC d = *pDesc;
+        d.Width *= g_cfg.scale;
+        d.Height *= g_cfg.scale;
+        HRESULT hr = m_real->CreateTexture2D(&d, nullptr, ppTexture2D);
+        if (SUCCEEDED(hr)) {
+            TagResource(*ppTexture2D, {(UINT)g_cfg.scale, pDesc->Width, pDesc->Height});
+            LogScaledCreate(*pDesc);
+            RecordTextureCreate(*pDesc, false);
+            return hr;
+        }
+        Log("scaled CreateTexture2D %ux%u failed 0x%08lx; creating it unscaled", d.Width, d.Height, hr);
+    }
     HRESULT hr = m_real->CreateTexture2D(pDesc, pInitialData, ppTexture2D);
     if (SUCCEEDED(hr) && pDesc && ppTexture2D) RecordTextureCreate(*pDesc, pInitialData != nullptr);
     return hr;
@@ -206,12 +220,47 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_D
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D1(const D3D11_TEXTURE2D_DESC1* pDesc1,
                                                           const D3D11_SUBRESOURCE_DATA* pInitialData,
                                                           ID3D11Texture2D1** ppTexture2D) {
-    HRESULT hr = m_real->CreateTexture2D1(pDesc1, pInitialData, ppTexture2D);
-    if (SUCCEEDED(hr) && pDesc1 && ppTexture2D) {
-        D3D11_TEXTURE2D_DESC d;
-        memcpy(&d, pDesc1, sizeof(d));  // DESC1 = DESC + TextureLayout
-        RecordTextureCreate(d, pInitialData != nullptr);
+    D3D11_TEXTURE2D_DESC d = {};
+    if (pDesc1) memcpy(&d, pDesc1, sizeof(d));  // DESC1 = DESC + TextureLayout
+    if (pDesc1 && ppTexture2D && WantScaled(d, pInitialData != nullptr)) {
+        D3D11_TEXTURE2D_DESC1 d1 = *pDesc1;
+        d1.Width *= g_cfg.scale;
+        d1.Height *= g_cfg.scale;
+        HRESULT hr = m_real->CreateTexture2D1(&d1, nullptr, ppTexture2D);
+        if (SUCCEEDED(hr)) {
+            TagResource(*ppTexture2D, {(UINT)g_cfg.scale, pDesc1->Width, pDesc1->Height});
+            LogScaledCreate(d);
+            RecordTextureCreate(d, false);
+            return hr;
+        }
     }
+    HRESULT hr = m_real->CreateTexture2D1(pDesc1, pInitialData, ppTexture2D);
+    if (SUCCEEDED(hr) && pDesc1 && ppTexture2D) RecordTextureCreate(d, pInitialData != nullptr);
+    return hr;
+}
+
+// Views of render/depth targets carry their resource's scale, so binding them costs one lookup.
+HRESULT STDMETHODCALLTYPE WrappedDevice::CreateRenderTargetView(ID3D11Resource* pResource,
+                                                                const D3D11_RENDER_TARGET_VIEW_DESC* pDesc,
+                                                                ID3D11RenderTargetView** ppRTView) {
+    HRESULT hr = m_real->CreateRenderTargetView(pResource, pDesc, ppRTView);
+    if (SUCCEEDED(hr) && ppRTView && *ppRTView && Scaling()) TagView(*ppRTView);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE WrappedDevice::CreateRenderTargetView1(ID3D11Resource* pResource,
+                                                                 const D3D11_RENDER_TARGET_VIEW_DESC1* pDesc1,
+                                                                 ID3D11RenderTargetView1** ppRTView1) {
+    HRESULT hr = m_real->CreateRenderTargetView1(pResource, pDesc1, ppRTView1);
+    if (SUCCEEDED(hr) && ppRTView1 && *ppRTView1 && Scaling()) TagView(*ppRTView1);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDepthStencilView(ID3D11Resource* pResource,
+                                                                const D3D11_DEPTH_STENCIL_VIEW_DESC* pDesc,
+                                                                ID3D11DepthStencilView** ppDepthStencilView) {
+    HRESULT hr = m_real->CreateDepthStencilView(pResource, pDesc, ppDepthStencilView);
+    if (SUCCEEDED(hr) && ppDepthStencilView && *ppDepthStencilView && Scaling()) TagView(*ppDepthStencilView);
     return hr;
 }
 

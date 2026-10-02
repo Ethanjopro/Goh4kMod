@@ -43,7 +43,10 @@ ml64 /nologo /c /Fobuild\obj\proxy\exports.obj src\proxy\gen\exports.asm > build
 if errorlevel 1 (type build\obj\ml64.txt & exit /b 1)
 rc /nologo /fo build\obj\proxy\version.res src\proxy\version.rc > build\obj\rc.txt 2>&1
 if errorlevel 1 (type build\obj\rc.txt & exit /b 1)
-cl %CFLAGS% /Isrc\proxy /Ibuild\gen /Fobuild\obj\proxy\ /Fdbuild\obj\proxy\vc.pdb src\proxy\*.cpp > build\obj\cl-proxy.txt 2>&1
+rem MinHook (vendored, BSD-2): user32 hooks for 2x mode. Third-party code, so its warnings are off.
+cl /nologo /c /O2 /MT /W0 /Zi /Fobuild\obj\proxy\ /Fdbuild\obj\proxy\vc.pdb src\third_party\minhook\src\buffer.c src\third_party\minhook\src\hook.c src\third_party\minhook\src\trampoline.c src\third_party\minhook\src\hde\hde64.c > build\obj\cl-minhook.txt 2>&1
+if errorlevel 1 (findstr /c:"error" build\obj\cl-minhook.txt & exit /b 1)
+cl %CFLAGS% /Isrc\proxy /Ibuild\gen /Isrc\third_party\minhook\include /Fobuild\obj\proxy\ /Fdbuild\obj\proxy\vc.pdb src\proxy\*.cpp > build\obj\cl-proxy.txt 2>&1
 set "RC=%ERRORLEVEL%"
 findstr /c:": error" /c:": warning" /c:"fatal error" build\obj\cl-proxy.txt
 if not "%RC%"=="0" exit /b 1
@@ -95,7 +98,7 @@ cl %CFLAGS% /Fobuild\obj\tests\ /Fdbuild\obj\tests\vc.pdb src\tests\proxytest.cp
 set "RC=%ERRORLEVEL%"
 findstr /c:": error" /c:": warning" /c:"fatal error" build\obj\cl-tests.txt
 if not "%RC%"=="0" exit /b 1
-link /nologo /DEBUG /OUT:build\proxytest.exe /PDB:build\proxytest.pdb build\obj\tests\*.obj user32.lib > build\obj\link-tests.txt 2>&1
+link /nologo /DEBUG /OUT:build\proxytest.exe /PDB:build\proxytest.pdb build\obj\tests\*.obj user32.lib gdi32.lib > build\obj\link-tests.txt 2>&1
 set "RC=%ERRORLEVEL%"
 type build\obj\link-tests.txt
 if not "%RC%"=="0" exit /b 1

@@ -1,6 +1,8 @@
 // Goh4kMod d3d11.dll proxy: DLL entry, the d3d11 exports we implement, and the entry points our dxgi.dll
 // proxy calls. Every other export is an ml64 jump stub (gen/exports.asm) through g_exports.
 #include "wrappers.h"
+#include "input.h"
+#include "scale.h"
 #include "gen/exports_gen.h"
 #include "../shared/real_exports.h"
 #include <intrin.h>
@@ -42,6 +44,13 @@ extern "C" HRESULT WINAPI Proxy_D3D11CreateDeviceAndSwapChain(
         pAdapter, DriverName(DriverType), Flags, Levels(pFeatureLevels, FeatureLevels).c_str());
     if (pSwapChainDesc) Log("  requested swapchain: %s", DescribeSwapChainDesc(*pSwapChainDesc).c_str());
 
+    DXGI_SWAP_CHAIN_DESC scaledDesc;
+    bool scaled = false;
+    if (pSwapChainDesc && fromGame && g_cfg.wrap) {
+        scaledDesc = *pSwapChainDesc;
+        scaled = ScaleRequest(scaledDesc.OutputWindow, &scaledDesc.BufferDesc.Width, &scaledDesc.BufferDesc.Height);
+        if (scaled) pSwapChainDesc = &scaledDesc;
+    }
     auto real = (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)g_exports[EXP_D3D11CreateDeviceAndSwapChain];
     HRESULT hr = real(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion, pSwapChainDesc,
                       ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
@@ -56,7 +65,7 @@ extern "C" HRESULT WINAPI Proxy_D3D11CreateDeviceAndSwapChain(
     }
     if (ppSwapChain && *ppSwapChain) {
         if (device)
-            *ppSwapChain = new WrappedSwapChain(*ppSwapChain, device);
+            *ppSwapChain = new WrappedSwapChain(*ppSwapChain, device, scaled);
         else
             Log("  swapchain left unwrapped: the caller didn't ask for the device");
     }
@@ -104,10 +113,17 @@ extern "C" HRESULT WINAPI Goh4k_CreateSwapChain(IDXGIFactory* factory, IUnknown*
     WrappedDevice* wd = AsWrappedDevice(pDevice);
     Log("IDXGIFactory::CreateSwapChain, %s device", wd ? "our wrapped" : "a foreign");
     if (pDesc) Log("  requested swapchain: %s", DescribeSwapChainDesc(*pDesc).c_str());
+    DXGI_SWAP_CHAIN_DESC scaledDesc;
+    bool scaled = false;
+    if (pDesc && wd && g_cfg.wrap) {
+        scaledDesc = *pDesc;
+        scaled = ScaleRequest(scaledDesc.OutputWindow, &scaledDesc.BufferDesc.Width, &scaledDesc.BufferDesc.Height);
+        if (scaled) pDesc = &scaledDesc;
+    }
     HRESULT hr = factory->CreateSwapChain(wd ? (IUnknown*)wd->Real() : pDevice, pDesc, ppSwapChain);
-    Log("  -> 0x%08lx", hr);
+    Log("  -> 0x%08lx%s", hr, scaled ? Fmt(" (real %ux%u)", pDesc->BufferDesc.Width, pDesc->BufferDesc.Height).c_str() : "");
     if (SUCCEEDED(hr) && wd && g_cfg.wrap && ppSwapChain && *ppSwapChain)
-        *ppSwapChain = new WrappedSwapChain(*ppSwapChain, wd);
+        *ppSwapChain = new WrappedSwapChain(*ppSwapChain, wd, scaled);
     if (wd) wd->Release();
     return hr;
 }
@@ -122,11 +138,18 @@ extern "C" HRESULT WINAPI Goh4k_CreateSwapChainForHwnd(IDXGIFactory2* factory, I
         Log("  requested: %ux%u fmt=%d msaa=%u buffers=%u scaling=%d effect=%d flags=0x%x windowed=%d", pDesc->Width,
             pDesc->Height, (int)pDesc->Format, pDesc->SampleDesc.Count, pDesc->BufferCount, (int)pDesc->Scaling,
             (int)pDesc->SwapEffect, pDesc->Flags, pFullscreenDesc ? pFullscreenDesc->Windowed : 1);
+    DXGI_SWAP_CHAIN_DESC1 scaledDesc;
+    bool scaled = false;
+    if (pDesc && wd && g_cfg.wrap) {
+        scaledDesc = *pDesc;
+        scaled = ScaleRequest(hWnd, &scaledDesc.Width, &scaledDesc.Height);
+        if (scaled) pDesc = &scaledDesc;
+    }
     HRESULT hr = factory->CreateSwapChainForHwnd(wd ? (IUnknown*)wd->Real() : pDevice, hWnd, pDesc, pFullscreenDesc,
                                                  pRestrictToOutput, ppSwapChain);
     Log("  -> 0x%08lx", hr);
     if (SUCCEEDED(hr) && wd && g_cfg.wrap && ppSwapChain && *ppSwapChain)
-        *ppSwapChain = new WrappedSwapChain(*ppSwapChain, wd);
+        *ppSwapChain = new WrappedSwapChain(*ppSwapChain, wd, scaled);
     if (wd) wd->Release();
     return hr;
 }
@@ -137,6 +160,12 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(self);
         Init(self);
+        if (Scaling()) {
+            // Real pixels everywhere, so the 2x mapping is exact whatever Windows' display scaling is.
+            BOOL dpi = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            Log("2x mode: per-monitor-v2 DPI awareness %s (error %lu)", dpi ? "set" : "not set", dpi ? 0 : GetLastError());
+            InstallInputHooks();
+        }
     } else if (reason == DLL_PROCESS_DETACH) {
         Shutdown(reserved != nullptr);
     }

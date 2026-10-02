@@ -1,9 +1,130 @@
 // WrappedContext action overrides: forward to the real context, and while a trace is active record each
-// action with the state it ran with (diag.cpp). M3 adds viewport/scissor/copy scaling here.
+// action with the state it ran with (diag.cpp). In 2x mode (scale.h) viewports, scissors, copy boxes and
+// ClearView rects follow the scale of the resources involved.
 #include "wrappers.h"
 #include "diag.h"
+#include "scale.h"
+#include <algorithm>
 
 namespace goh4k {
+
+// ---------------------------------------------------------------- 2x state
+
+void WrappedContext::ResetTrackedState() {
+    m_numVp = m_numSc = 0;
+    m_targetScale = m_appliedScale = 1;
+    m_targetLogicalW = m_targetLogicalH = 0;
+}
+
+void WrappedContext::TargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv,
+                                    ID3D11UnorderedAccessView* const* uavs, UINT numUavs) {
+    ID3D11View* first = nullptr;
+    for (UINT i = 0; i < numRtvs && rtvs && !first; ++i) first = rtvs[i];
+    if (!first) first = dsv;
+    for (UINT i = 0; i < numUavs && uavs && !first; ++i) first = uavs[i];
+    ScaleTag t = {1, 0, 0};
+    UINT s = ScaleOfView(first, &t);
+    m_targetScale = s;
+    m_targetLogicalW = t.logicalW;
+    m_targetLogicalH = t.logicalH;
+    if (s != m_appliedScale) {
+        ApplyViewports();
+        ApplyScissors();
+    }
+}
+
+void WrappedContext::ApplyViewports() {
+    m_appliedScale = m_targetScale;
+    if (m_targetScale <= 1 || !m_numVp) return m_real->RSSetViewports(m_numVp, m_vp);
+    D3D11_VIEWPORT v[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+    float s = (float)m_targetScale;
+    for (UINT i = 0; i < m_numVp; ++i) {
+        v[i] = m_vp[i];
+        // A viewport bigger than the target's logical size means the game already used real sizes.
+        if (m_targetLogicalW && (m_vp[i].TopLeftX + m_vp[i].Width > m_targetLogicalW + 0.5f ||
+                                 m_vp[i].TopLeftY + m_vp[i].Height > m_targetLogicalH + 0.5f)) {
+            NoteOnce("viewport-already-real",
+                     Fmt("viewport %gx%g on a target with logical size %ux%u left unscaled", m_vp[i].Width,
+                         m_vp[i].Height, m_targetLogicalW, m_targetLogicalH));
+            continue;
+        }
+        v[i].TopLeftX *= s;
+        v[i].TopLeftY *= s;
+        v[i].Width *= s;
+        v[i].Height *= s;
+    }
+    m_real->RSSetViewports(m_numVp, v);
+}
+
+void WrappedContext::ApplyScissors() {
+    if (m_targetScale <= 1 || !m_numSc) return m_real->RSSetScissorRects(m_numSc, m_sc);
+    D3D11_RECT r[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+    LONG s = (LONG)m_targetScale;
+    for (UINT i = 0; i < m_numSc; ++i)
+        r[i] = {m_sc[i].left * s, m_sc[i].top * s, m_sc[i].right * s, m_sc[i].bottom * s};
+    m_real->RSSetScissorRects(m_numSc, r);
+}
+
+void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargets(UINT NumViews, ID3D11RenderTargetView* const* ppRenderTargetViews,
+                                                         ID3D11DepthStencilView* pDepthStencilView) {
+    m_real->OMSetRenderTargets(NumViews, ppRenderTargetViews, pDepthStencilView);
+    if (Scaling()) TargetsChanged(ppRenderTargetViews, NumViews, pDepthStencilView, nullptr, 0);
+}
+
+void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargetsAndUnorderedAccessViews(
+    UINT NumRTVs, ID3D11RenderTargetView* const* ppRenderTargetViews, ID3D11DepthStencilView* pDepthStencilView,
+    UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
+    const UINT* pUAVInitialCounts) {
+    m_real->OMSetRenderTargetsAndUnorderedAccessViews(NumRTVs, ppRenderTargetViews, pDepthStencilView, UAVStartSlot,
+                                                      NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
+    if (Scaling() && NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+        TargetsChanged(ppRenderTargetViews, NumRTVs, pDepthStencilView,
+                       NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? ppUnorderedAccessViews : nullptr,
+                       NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? NumUAVs : 0);
+}
+
+void STDMETHODCALLTYPE WrappedContext::RSSetViewports(UINT NumViewports, const D3D11_VIEWPORT* pViewports) {
+    if (!Scaling()) return m_real->RSSetViewports(NumViewports, pViewports);
+    m_numVp = std::min<UINT>(NumViewports, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
+    if (pViewports) memcpy(m_vp, pViewports, m_numVp * sizeof(D3D11_VIEWPORT));
+    else m_numVp = 0;
+    ApplyViewports();
+}
+
+void STDMETHODCALLTYPE WrappedContext::RSSetScissorRects(UINT NumRects, const D3D11_RECT* pRects) {
+    if (!Scaling()) return m_real->RSSetScissorRects(NumRects, pRects);
+    m_numSc = std::min<UINT>(NumRects, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
+    if (pRects) memcpy(m_sc, pRects, m_numSc * sizeof(D3D11_RECT));
+    else m_numSc = 0;
+    ApplyScissors();
+}
+
+void STDMETHODCALLTYPE WrappedContext::RSGetViewports(UINT* pNumViewports, D3D11_VIEWPORT* pViewports) {
+    if (!Scaling() || !pNumViewports) return m_real->RSGetViewports(pNumViewports, pViewports);
+    if (pViewports) {
+        UINT n = std::min(*pNumViewports, m_numVp);
+        memcpy(pViewports, m_vp, n * sizeof(D3D11_VIEWPORT));
+        for (UINT i = n; i < *pNumViewports; ++i) pViewports[i] = {};
+    }
+    *pNumViewports = m_numVp;
+}
+
+void STDMETHODCALLTYPE WrappedContext::RSGetScissorRects(UINT* pNumRects, D3D11_RECT* pRects) {
+    if (!Scaling() || !pNumRects) return m_real->RSGetScissorRects(pNumRects, pRects);
+    if (pRects) {
+        UINT n = std::min(*pNumRects, m_numSc);
+        memcpy(pRects, m_sc, n * sizeof(D3D11_RECT));
+        for (UINT i = n; i < *pNumRects; ++i) pRects[i] = {};
+    }
+    *pNumRects = m_numSc;
+}
+
+void STDMETHODCALLTYPE WrappedContext::ClearState() {
+    m_real->ClearState();
+    ResetTrackedState();
+}
+
+static std::string Pair(ID3D11Resource* dst, ID3D11Resource* src) { return "dst " + ResTag(dst) + " src " + ResTag(src); }
 
 // Arguments are only formatted while a trace is active.
 #define TRACE_ACTION(kind, ...) \
@@ -79,6 +200,19 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion(ID3D11Resource* pDs
                                                             UINT SrcSubresource, const D3D11_BOX* pSrcBox) {
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
+    if (Scaling()) {
+        UINT ds = ScaleOf(pDstResource), ss = ScaleOf(pSrcResource);
+        if (ds != ss) NoteOnce("copy-region-mixed-scale", Pair(pDstResource, pSrcResource));
+        if (ds > 1 && ds == ss) {
+            D3D11_BOX b;
+            if (pSrcBox) b = {pSrcBox->left * ds, pSrcBox->top * ds, pSrcBox->front, pSrcBox->right * ds,
+                              pSrcBox->bottom * ds, pSrcBox->back};
+            m_real->CopySubresourceRegion(pDstResource, DstSubresource, DstX * ds, DstY * ds, DstZ, pSrcResource,
+                                          SrcSubresource, pSrcBox ? &b : nullptr);
+            TRACE_AFTER();
+            return;
+        }
+    }
     m_real->CopySubresourceRegion(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
     TRACE_AFTER();
 }
@@ -89,6 +223,19 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
                                                              const D3D11_BOX* pSrcBox, UINT CopyFlags) {
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion1 dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
+    if (Scaling()) {
+        UINT ds = ScaleOf(pDstResource), ss = ScaleOf(pSrcResource);
+        if (ds != ss) NoteOnce("copy-region-mixed-scale", Pair(pDstResource, pSrcResource));
+        if (ds > 1 && ds == ss) {
+            D3D11_BOX b;
+            if (pSrcBox) b = {pSrcBox->left * ds, pSrcBox->top * ds, pSrcBox->front, pSrcBox->right * ds,
+                              pSrcBox->bottom * ds, pSrcBox->back};
+            m_real->CopySubresourceRegion1(pDstResource, DstSubresource, DstX * ds, DstY * ds, DstZ, pSrcResource,
+                                           SrcSubresource, pSrcBox ? &b : nullptr, CopyFlags);
+            TRACE_AFTER();
+            return;
+        }
+    }
     m_real->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource,
                                    pSrcBox, CopyFlags);
     TRACE_AFTER();
@@ -97,6 +244,8 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
 void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource, ID3D11Resource* pSrcResource) {
     TRACE_ACTION(TraceKind::Plain, "CopyResource dst=%s src=%s", ResTag(pDstResource).c_str(),
                  ResTag(pSrcResource).c_str());
+    if (Scaling() && ScaleOf(pDstResource) != ScaleOf(pSrcResource))
+        NoteOnce("copy-resource-mixed-scale", Pair(pDstResource, pSrcResource));
     m_real->CopyResource(pDstResource, pSrcResource);
     TRACE_AFTER();
 }
@@ -106,6 +255,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstRes
                                                         UINT SrcRowPitch, UINT SrcDepthPitch) {
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
+    if (Scaling() && ScaleOf(pDstResource) > 1) NoteOnce("update-scaled-resource", "dst " + ResTag(pDstResource));
     m_real->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
     TRACE_AFTER();
 }
@@ -152,6 +302,17 @@ void STDMETHODCALLTYPE WrappedContext::ClearDepthStencilView(ID3D11DepthStencilV
 void STDMETHODCALLTYPE WrappedContext::ClearView(ID3D11View* pView, const FLOAT Color[4], const D3D11_RECT* pRect,
                                                 UINT NumRects) {
     TRACE_ACTION(TraceKind::Plain, "ClearView %s rects=%u", ViewTag(pView).c_str(), NumRects);
+    if (Scaling() && pRect && NumRects && NumRects <= 64) {
+        UINT s = ScaleOfView(pView);
+        if (s > 1) {
+            D3D11_RECT r[64];
+            for (UINT i = 0; i < NumRects; ++i)
+                r[i] = {pRect[i].left * (LONG)s, pRect[i].top * (LONG)s, pRect[i].right * (LONG)s, pRect[i].bottom * (LONG)s};
+            m_real->ClearView(pView, Color, r, NumRects);
+            TRACE_AFTER();
+            return;
+        }
+    }
     m_real->ClearView(pView, Color, pRect, NumRects);
     TRACE_AFTER();
 }
@@ -167,6 +328,8 @@ void STDMETHODCALLTYPE WrappedContext::ResolveSubresource(ID3D11Resource* pDstRe
                                                          DXGI_FORMAT Format) {
     TRACE_ACTION(TraceKind::Plain, "ResolveSubresource dst=%s/%u src=%s/%u fmt=%d", ResTag(pDstResource).c_str(),
                  DstSubresource, ResTag(pSrcResource).c_str(), SrcSubresource, (int)Format);
+    if (Scaling() && ScaleOf(pDstResource) != ScaleOf(pSrcResource))
+        NoteOnce("resolve-mixed-scale", Pair(pDstResource, pSrcResource));
     m_real->ResolveSubresource(pDstResource, DstSubresource, pSrcResource, SrcSubresource, Format);
     TRACE_AFTER();
 }
@@ -177,12 +340,14 @@ void STDMETHODCALLTYPE WrappedContext::ExecuteCommandList(ID3D11CommandList* pCo
         if (m_immediate) TraceExecuteCommandList(pCommandList);
     }
     m_real->ExecuteCommandList(pCommandList, RestoreContextState);
+    if (!RestoreContextState) ResetTrackedState();  // D3D11 clears the immediate context's state
     TRACE_AFTER();
 }
 
 HRESULT STDMETHODCALLTYPE WrappedContext::FinishCommandList(BOOL RestoreDeferredContextState,
                                                            ID3D11CommandList** ppCommandList) {
     HRESULT hr = m_real->FinishCommandList(RestoreDeferredContextState, ppCommandList);
+    if (!RestoreDeferredContextState) ResetTrackedState();  // and the deferred context's
     if (SUCCEEDED(hr) && ppCommandList && *ppCommandList) TraceFinishCommandList(this, *ppCommandList);
     return hr;
 }

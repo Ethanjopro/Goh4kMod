@@ -3,13 +3,64 @@
 // Present (diag.cpp).
 #include "wrappers.h"
 #include "diag.h"
+#include "input.h"
+#include "scale.h"
 
 namespace goh4k {
+
+// ---------------------------------------------------------------- 2x sizing
+
+// The game asks for logical sizes. A request whose 2x would not fit the monitor is taken as already real
+// (e.g. a size the game read back from the window), so the factor can't run away.
+bool ScaleRequest(HWND hwnd, UINT* w, UINT* h) {
+    if (!Scaling() || !w || !h) return false;
+    UINT s = (UINT)g_cfg.scale;
+    if (*w == 0 || *h == 0) return true;  // "use the window size": the window is real-sized, so this is 2x
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);  // not from the exe: real values
+    if (*w * s > (UINT)(mi.rcMonitor.right - mi.rcMonitor.left) || *h * s > (UINT)(mi.rcMonitor.bottom - mi.rcMonitor.top)) {
+        NoteOnce("swapchain-size-already-real", Fmt("%ux%u requested; treated as real", *w, *h));
+        return false;
+    }
+    *w *= s;
+    *h *= s;
+    return true;
+}
+
+void WrappedSwapChain::UpdateLogicalSize() {
+    DXGI_SWAP_CHAIN_DESC d = {};
+    m_real->GetDesc(&d);
+    UINT s = m_scaled ? (UINT)g_cfg.scale : 1;
+    g_logicalW = d.BufferDesc.Width / s;
+    g_logicalH = d.BufferDesc.Height / s;
+    if (Scaling())
+        Log("logical screen %ux%u, real %ux%u", (UINT)g_logicalW, (UINT)g_logicalH, d.BufferDesc.Width,
+            d.BufferDesc.Height);
+}
+
+HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) {
+    HRESULT hr = m_real->GetDesc(pDesc);
+    if (SUCCEEDED(hr) && pDesc && m_scaled) {
+        pDesc->BufferDesc.Width /= (UINT)g_cfg.scale;
+        pDesc->BufferDesc.Height /= (UINT)g_cfg.scale;
+    }
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDesc1(DXGI_SWAP_CHAIN_DESC1* pDesc) {
+    HRESULT hr = m_real->GetDesc1(pDesc);
+    if (SUCCEEDED(hr) && pDesc && m_scaled) {
+        pDesc->Width /= (UINT)g_cfg.scale;
+        pDesc->Height /= (UINT)g_cfg.scale;
+    }
+    return hr;
+}
 
 static const IID* const kSwapChainIds[] = {&__uuidof(IDXGISwapChain1), &__uuidof(IDXGISwapChain2),
                                            &__uuidof(IDXGISwapChain3), &__uuidof(IDXGISwapChain4)};
 
-WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) : m_device(device) {
+WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device, bool scaled)
+    : m_device(device), m_scaled(scaled) {
     m_real = reinterpret_cast<IDXGISwapChain4*>(real);
     for (int i = 3; i >= 0; --i) {
         IUnknown* p = nullptr;
@@ -20,8 +71,14 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) 
             break;
         }
     }
-    Log("swapchain wrapped: real=%p IDXGISwapChain%d", real, m_level);
+    Log("swapchain wrapped: real=%p IDXGISwapChain%d%s", real, m_level, m_scaled ? ", 2x" : "");
     LogState("created");
+    if (Scaling()) {
+        UpdateLogicalSize();
+        DXGI_SWAP_CHAIN_DESC d = {};
+        m_real->GetDesc(&d);
+        SubclassGameWindow(d.OutputWindow);
+    }
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::QueryInterface(REFIID riid, void** ppv) {
@@ -64,6 +121,13 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDevice(REFIID riid, void** ppDevi
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) {
     HRESULT hr = m_real->GetBuffer(Buffer, riid, ppSurface);
+    if (SUCCEEDED(hr) && m_scaled && ppSurface && *ppSurface) {
+        ID3D11Resource* r = nullptr;
+        if (SUCCEEDED(static_cast<IUnknown*>(*ppSurface)->QueryInterface(IID_PPV_ARGS(&r)))) {
+            TagResource(r, {(UINT)g_cfg.scale, (UINT)g_logicalW, (UINT)g_logicalH});
+            r->Release();
+        }
+    }
     if (!m_loggedBuffer) {
         m_loggedBuffer = true;
         Log("GetBuffer(%u, %s) -> 0x%08lx", Buffer, GuidStr(riid).c_str(), hr);
@@ -144,8 +208,15 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers(UINT BufferCount, UINT
                                                           DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     Log("ResizeBuffers(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)NewFormat,
         SwapChainFlags);
+    DXGI_SWAP_CHAIN_DESC d = {};
+    m_real->GetDesc(&d);
+    bool scaled = ScaleRequest(d.OutputWindow, &Width, &Height);
     HRESULT hr = m_real->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
-    Log("  -> 0x%08lx", hr);
+    Log("  -> 0x%08lx%s", hr, scaled && Width ? Fmt(" (real %ux%u)", Width, Height).c_str() : "");
+    if (SUCCEEDED(hr) && Scaling()) {
+        m_scaled = scaled;
+        UpdateLogicalSize();
+    }
     LogState("after ResizeBuffers");
     return hr;
 }
@@ -156,9 +227,16 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers1(UINT BufferCount, UIN
                                                            IUnknown* const* ppPresentQueue) {
     Log("ResizeBuffers1(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)Format,
         SwapChainFlags);
+    DXGI_SWAP_CHAIN_DESC d = {};
+    m_real->GetDesc(&d);
+    bool scaled = ScaleRequest(d.OutputWindow, &Width, &Height);
     HRESULT hr =
         m_real->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr) && Scaling()) {
+        m_scaled = scaled;
+        UpdateLogicalSize();
+    }
     LogState("after ResizeBuffers1");
     return hr;
 }
@@ -169,6 +247,16 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeTarget(const DXGI_MODE_DESC* p
             p->RefreshRate.Numerator, p->RefreshRate.Denominator, (int)p->ScanlineOrdering, (int)p->Scaling);
     else
         Log("ResizeTarget(null)");
+    DXGI_MODE_DESC mode;
+    if (p && Scaling() && p->Width && p->Height) {
+        mode = *p;
+        DXGI_SWAP_CHAIN_DESC d = {};
+        m_real->GetDesc(&d);
+        if (ScaleRequest(d.OutputWindow, &mode.Width, &mode.Height)) {
+            Log("  -> real mode %ux%u", mode.Width, mode.Height);
+            p = &mode;
+        }
+    }
     HRESULT hr = m_real->ResizeTarget(p);
     Log("  -> 0x%08lx", hr);
     LogState("after ResizeTarget");

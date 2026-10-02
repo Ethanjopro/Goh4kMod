@@ -237,6 +237,63 @@ int main() {
         }
     }
 
+    // 5b) 2x mode checks (only when config\goh4k.ini has Scale=2).
+    wchar_t ini[MAX_PATH];
+    swprintf_s(ini, L"%s\\config\\goh4k.ini", root);
+    int scale = GetPrivateProfileIntW(L"proxy", L"Scale", 1, ini);
+    if (scale == 2) {
+        DXGI_SWAP_CHAIN_DESC d = {};
+        sc->GetDesc(&d);
+        ID3D11Texture2D* bb = nullptr;
+        sc->GetBuffer(0, IID_PPV_ARGS(&bb));
+        D3D11_TEXTURE2D_DESC bd = {};
+        if (bb) bb->GetDesc(&bd), bb->Release();
+        CHECK(d.BufferDesc.Width == 800 && d.BufferDesc.Height == 450, "2x: GetDesc reports logical 800x450 (%ux%u)",
+              d.BufferDesc.Width, d.BufferDesc.Height);
+        CHECK(bd.Width == 1600 && bd.Height == 900, "2x: real backbuffer is 1600x900 (%ux%u)", bd.Width, bd.Height);
+        auto make = [&](UINT w, UINT h, UINT bind, UINT* rw, UINT* rh) {
+            D3D11_TEXTURE2D_DESC td = {w, h, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT, bind, 0, 0};
+            ID3D11Texture2D* t = nullptr;
+            dev->CreateTexture2D(&td, nullptr, &t);
+            D3D11_TEXTURE2D_DESC o = {};
+            if (t) t->GetDesc(&o), t->Release();
+            *rw = o.Width, *rh = o.Height;
+        };
+        UINT w, h;
+        make(800, 450, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, &w, &h);
+        CHECK(w == 1600 && h == 900, "2x: screen-size RT created at 1600x900 (%ux%u)", w, h);
+        make(400, 225, D3D11_BIND_RENDER_TARGET, &w, &h);
+        CHECK(w == 800 && h == 450, "2x: half-size RT created at 800x450 (%ux%u)", w, h);
+        make(800, 450, D3D11_BIND_SHADER_RESOURCE, &w, &h);
+        CHECK(w == 800 && h == 450, "2x: screen-size SRV-only texture left alone (%ux%u)", w, h);
+        make(512, 512, D3D11_BIND_RENDER_TARGET, &w, &h);
+        CHECK(w == 512 && h == 512, "2x: unrelated 512x512 RT left alone (%ux%u)", w, h);
+        // Viewports read back in logical units.
+        ID3D11Texture2D* bb2 = nullptr;
+        sc->GetBuffer(0, IID_PPV_ARGS(&bb2));
+        ID3D11RenderTargetView* rtv = nullptr;
+        if (bb2) dev->CreateRenderTargetView(bb2, nullptr, &rtv), bb2->Release();
+        D3D11_VIEWPORT vp = {0, 0, 800, 450, 0, 1};
+        ctx->RSSetViewports(1, &vp);
+        ctx->OMSetRenderTargets(1, &rtv, nullptr);
+        D3D11_VIEWPORT back = {};
+        UINT nvp = 1;
+        ctx->RSGetViewports(&nvp, &back);
+        CHECK(nvp == 1 && back.Width == 800 && back.Height == 450, "2x: RSGetViewports returns logical %gx%g", back.Width,
+              back.Height);
+        ctx->OMSetRenderTargets(0, nullptr, nullptr);
+        if (rtv) rtv->Release();
+        // user32: calls from this exe see the logical screen (gdi32 HORZRES is the real one).
+        HDC dc = GetDC(nullptr);
+        int realW = GetDeviceCaps(dc, HORZRES);
+        ReleaseDC(nullptr, dc);
+        int logicalW = GetSystemMetrics(SM_CXSCREEN);
+        CHECK(logicalW * 2 == realW, "2x: GetSystemMetrics(SM_CXSCREEN) %d is half of the real %d", logicalW, realW);
+        POINT p;
+        GetCursorPos(&p);
+        CHECK(p.x < realW / 2 + 1, "2x: GetCursorPos in logical range (%ld)", p.x);
+    }
+
     // 6) Release everything; the device must reach 0.
     if (def) def->Release();
     if (sc4) sc4->Release();
