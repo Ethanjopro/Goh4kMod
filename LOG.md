@@ -1,8 +1,8 @@
 # Goh4kMod log
 
 ## Status
-Phase 0 and Phase 1 done (2026-10-02). Next: M1 pass-through d3d11.dll proxy + deploy/uninstall, after
-Ethan's go. Game folder untouched so far.
+M1 done (2026-10-02): d3d11.dll + dxgi.dll pass-through proxies, deploy/uninstall, drive.exe. Next: M2
+(built-in capture + trace). Working autonomously under /goal. Game folder currently clean (uninstalled).
 
 ## Gotchas (symptom -> cause -> fix)
 - vcvars64.bat prints "'vswhere.exe' is not recognized" -> it calls vswhere by name internally -> harmless;
@@ -27,6 +27,11 @@ Ethan's go. Game folder untouched so far.
 - 2026-10-02 02:55 deploy: d3d11.dll sha256 7EE009219FBA (new file)
 - 2026-10-02 03:05 uninstall: removed d3d11.dll
 - 2026-10-02 03:05 uninstall check: folder matches the baseline (26 files)
+- 2026-10-02 12:11 deploy: d3d11.dll sha256 FC2E9BE9CB9B (new file)
+- 2026-10-02 12:11 deploy: dxgi.dll sha256 7B5835FE9F18 (new file)
+- 2026-10-02 12:15 uninstall: removed d3d11.dll
+- 2026-10-02 12:15 uninstall: removed dxgi.dll
+- 2026-10-02 12:15 uninstall check: folder matches the baseline (26 files)
 
 ## Cleanup
 (none yet; anything a tool writes outside the project folder goes here)
@@ -89,3 +94,17 @@ Ethan's go. Game folder untouched so far.
 - Added the dxgi.dll proxy (20 exports, factory wrapper) and the Goh4k_* hand-off exports in d3d11.dll.
   proxytest now replays the game's sequence and passes 24/24; the deploy self-test still passes.
   deploy.ps1 now ships both DLLs. Next: session 2 to confirm Presents go through the wrapper.
+
+### 2026-10-02 M1 session 2: M1 DONE
+- Deployed d3d11.dll + dxgi.dll. The game's factory and its real swapchain are now wrapped: in 4 min of
+  menu and mission (same USSR mission), 38,528 frames went through the wrapper at 160-240 fps, and status.txt
+  stayed live. The anti-cheat didn't react (2 sessions so far). Uninstall: folder matches the baseline;
+  profile unchanged. Log: scratch/logs/goh4k-20261002-121112-9152.log.
+- Real swapchain: created at 5.2 s through IDXGIFactory::CreateSwapChain, 3840x2160 B8G8R8A8 with
+  **8x MSAA on the backbuffer**, 2 buffers, BLT discard, ALLOW_MODE_SWITCH. The game then calls
+  SetFullscreenState(1), ResizeBuffers(0x0) and ResizeTarget(3840x2160), so it runs in exclusive
+  fullscreen. The "hdr" option is tone mapping only: the format is BGRA8 and SetColorSpace1 is never called.
+- DPI: this time the process was per-monitor aware from the first log line (3840x2160 metrics,
+  144 dpi); in session 1 it was unaware at the same point. Cause unknown. M3 will set per-monitor-v2
+  awareness itself at DLL load so the mouse math doesn't depend on it.
+- Ethan set /goal for autonomous work: no per-session asking from here on (see memory).
