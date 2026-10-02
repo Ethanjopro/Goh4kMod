@@ -221,3 +221,6 @@ WineHooks HD mode has shown the trick works in this game.
   goes to scratch\logs\.
 - **After a game update:** if Steam's file check runs, it doesn't remove our added DLLs. If the game
   misbehaves after an update, run uninstall.cmd, then rebuild and deploy.
+- **Shareable build:** `build.cmd release` produces build\release\Goh4kMod-1.0.zip. That build reads
+  goh4k.ini next to the DLL and writes goh4k.log there. `deploy.cmd -Release` installs exactly the zip
+  contents. See NOTES.md for how it works and how to fix it after a game update.

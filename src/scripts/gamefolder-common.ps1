@@ -20,6 +20,10 @@ $GameRoot = Split-Path (Split-Path $GameBin)
 $Product = 'Goh4kMod'
 # Files the game rewrites by itself; a baseline mismatch on these is reported but not a failure.
 $GameManaged = @('announcements.set')
+# Non-DLL files that belong to the mod by name: the release build's settings file, its log, and its
+# diagnostics folder (only created when Diagnostics=1).
+$ModFileNames = @('goh4k.ini', 'goh4k.log')
+$ModDirNames = @('goh4k-diagnostics')
 
 function Assert-GameNotRunning {
     $running = @(Get-Process -ErrorAction SilentlyContinue |

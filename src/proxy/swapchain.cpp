@@ -11,18 +11,17 @@ namespace goh4k {
 
 // ---------------------------------------------------------------- 2x sizing
 
-// The game asks for logical sizes. A request whose 2x would not fit the monitor is taken as already real
-// (e.g. a size the game read back from the window), so the factor can't run away.
+// The game asks for logical sizes. Returns whether the request runs at 2x, doubling *w/*h in place if so.
+// A request whose 2x doesn't fit the monitor (the game is set to native 4K, say) runs natively instead;
+// callers switch 2x off for it (SetScaleActive). 0x0 ("use the window size") keeps the current state.
 bool ScaleRequest(HWND hwnd, UINT* w, UINT* h) {
-    if (!Scaling() || !w || !h) return false;
+    if (!ScaleConfigured() || !w || !h) return false;
     UINT s = (UINT)g_cfg.scale;
-    if (*w == 0 || *h == 0) return true;  // "use the window size": the window is real-sized, so this is 2x
+    if (*w == 0 || *h == 0) return g_scaleActive;
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);  // not from the exe: real values
-    if (*w * s > (UINT)(mi.rcMonitor.right - mi.rcMonitor.left) || *h * s > (UINT)(mi.rcMonitor.bottom - mi.rcMonitor.top)) {
-        NoteOnce("swapchain-size-already-real", Fmt("%ux%u requested; treated as real", *w, *h));
+    if (*w * s > (UINT)(mi.rcMonitor.right - mi.rcMonitor.left) || *h * s > (UINT)(mi.rcMonitor.bottom - mi.rcMonitor.top))
         return false;
-    }
     *w *= s;
     *h *= s;
     return true;
@@ -34,9 +33,17 @@ void WrappedSwapChain::UpdateLogicalSize() {
     UINT s = m_scaled ? (UINT)g_cfg.scale : 1;
     g_logicalW = d.BufferDesc.Width / s;
     g_logicalH = d.BufferDesc.Height / s;
-    if (Scaling())
-        Log("logical screen %ux%u, real %ux%u", (UINT)g_logicalW, (UINT)g_logicalH, d.BufferDesc.Width,
-            d.BufferDesc.Height);
+    if (ScaleConfigured())
+        Log("logical screen %ux%u, real %ux%u%s", (UINT)g_logicalW, (UINT)g_logicalH, d.BufferDesc.Width,
+            d.BufferDesc.Height, m_scaled ? "" : " (2x off)");
+}
+
+// After a resize decision: remember it, switch 2x on/off, and drop cached backbuffer wrappers.
+void WrappedSwapChain::SetScaled(bool scaled, const char* why) {
+    m_scaled = scaled;
+    SetScaleActive(scaled, why);
+    UpdateLogicalSize();
+    for (auto& b : m_buffers) b = nullptr;  // old wrappers are left to leak (see texture.cpp)
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) {
@@ -74,7 +81,7 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device, 
     }
     Log("swapchain wrapped: real=%p IDXGISwapChain%d%s", real, m_level, m_scaled ? ", 2x" : "");
     LogState("created");
-    if (Scaling()) {
+    if (ScaleConfigured()) {
         UpdateLogicalSize();
         DXGI_SWAP_CHAIN_DESC d = {};
         m_real->GetDesc(&d);
@@ -172,7 +179,7 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     }
     if (m_frames == 1) LogState("first Present");
     ULONGLONG now = GetTickCount64();
-    if (now - m_statusTick >= (ULONGLONG)g_cfg.statusMs) WriteStatus(now);
+    if (g_cfg.diagnostics && now - m_statusTick >= (ULONGLONG)g_cfg.statusMs) WriteStatus(now);
 }
 
 void WrappedSwapChain::WriteStatus(ULONGLONG now) {
@@ -194,7 +201,7 @@ void WrappedSwapChain::WriteStatus(ULONGLONG now) {
     text += Fmt("fullscreen=%d\r\ncolorspace=%d\r\n", fs, m_colorSpace);
     text += "window=" + DescribeWindow(d.OutputWindow) + "\r\n";
     text += Fmt("config=Wrap=%d Scale=%d\r\n", g_cfg.wrap, g_cfg.scale);
-    WriteTextFile(ProjectDir() + L"\\captures\\status.txt", text);
+    WriteTextFile(CapturesDir() + L"\\status.txt", text);
 }
 
 void WrappedSwapChain::LogState(const char* why) {
@@ -223,11 +230,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers(UINT BufferCount, UINT
     bool scaled = ScaleRequest(d.OutputWindow, &Width, &Height);
     HRESULT hr = m_real->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
     Log("  -> 0x%08lx%s", hr, scaled && Width ? Fmt(" (real %ux%u)", Width, Height).c_str() : "");
-    if (SUCCEEDED(hr) && Scaling()) {
-        m_scaled = scaled;
-        UpdateLogicalSize();
-        for (auto& b : m_buffers) b = nullptr;  // new buffers; old wrappers are left to leak (see texture.cpp)
-    }
+    if (SUCCEEDED(hr) && ScaleConfigured()) SetScaled(scaled, "ResizeBuffers");
     LogState("after ResizeBuffers");
     return hr;
 }
@@ -244,11 +247,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers1(UINT BufferCount, UIN
     HRESULT hr =
         m_real->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     Log("  -> 0x%08lx", hr);
-    if (SUCCEEDED(hr) && Scaling()) {
-        m_scaled = scaled;
-        UpdateLogicalSize();
-        for (auto& b : m_buffers) b = nullptr;
-    }
+    if (SUCCEEDED(hr) && ScaleConfigured()) SetScaled(scaled, "ResizeBuffers1");
     LogState("after ResizeBuffers1");
     return hr;
 }
@@ -260,17 +259,23 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeTarget(const DXGI_MODE_DESC* p
     else
         Log("ResizeTarget(null)");
     DXGI_MODE_DESC mode;
-    if (p && Scaling() && p->Width && p->Height) {
+    bool decided = false, scaled = false;
+    if (p && ScaleConfigured() && p->Width && p->Height) {
         mode = *p;
         DXGI_SWAP_CHAIN_DESC d = {};
         m_real->GetDesc(&d);
-        if (ScaleRequest(d.OutputWindow, &mode.Width, &mode.Height)) {
+        decided = true;
+        scaled = ScaleRequest(d.OutputWindow, &mode.Width, &mode.Height);
+        if (scaled) {
             Log("  -> real mode %ux%u", mode.Width, mode.Height);
             p = &mode;
         }
     }
     HRESULT hr = m_real->ResizeTarget(p);
     Log("  -> 0x%08lx", hr);
+    // The mode the game chose decides 2x even when the real mode stays the same (e.g. 1920x1080 at 2x and
+    // native 3840x2160 are both a 3840x2160 mode), in which case no ResizeBuffers follows.
+    if (SUCCEEDED(hr) && decided) SetScaled(scaled, "ResizeTarget");
     LogState("after ResizeTarget");
     return hr;
 }

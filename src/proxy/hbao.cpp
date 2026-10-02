@@ -18,7 +18,7 @@ bool FromHbao(void* ret) { return (uintptr_t)ret >= g_hbaoBase && (uintptr_t)ret
 
 void FindHbaoModule() {
     static bool done = false;
-    if (done || !Scaling()) return;
+    if (done || !ScaleConfigured()) return;
     done = true;
     HMODULE m = GetModuleHandleW(L"GFSDK_SSAO_D3D11.win64.dll");
     if (!m) return Log("hbao: GFSDK_SSAO_D3D11.win64.dll not loaded");

@@ -11,6 +11,7 @@ $names = @($records | ForEach-Object { $_.Name })
 # Also catch any of our DLLs that aren't in the list (e.g. deployed.txt was lost).
 $names += @(Get-ChildItem -LiteralPath $GameBin -File | Where-Object { $_.VersionInfo.ProductName -eq $Product } |
     ForEach-Object { $_.Name })
+$names += @($ModFileNames | Where-Object { Test-Path -LiteralPath (Join-Path $GameBin $_) })
 $names = @($names | Sort-Object -Unique)
 $logLines = @()
 $problems = 0
@@ -24,7 +25,7 @@ foreach ($name in $names) {
         continue
     }
     if (Test-Path -LiteralPath $dst) {
-        if ((Test-Ours $dst) -or ($rec -and (Get-Sha256 $dst) -eq $rec.Hash)) {
+        if ((Test-Ours $dst) -or ($rec -and (Get-Sha256 $dst) -eq $rec.Hash) -or $ModFileNames -contains $name) {
             Remove-Item -LiteralPath $dst -Force
             $logLines += "- $(Get-Stamp) uninstall: removed $name"
             Write-Host "removed $name"
@@ -39,6 +40,14 @@ foreach ($name in $names) {
         Copy-Item -LiteralPath $rec.Backup $dst -Force
         $logLines += "- $(Get-Stamp) uninstall: restored stock $name from $($rec.Backup.Substring($Root.Length + 1))"
         Write-Host "restored stock $name"
+    }
+}
+foreach ($dir in $ModDirNames) {
+    $p = Join-Path $GameBin $dir
+    if (Test-Path -LiteralPath $p) {
+        Remove-Item -LiteralPath $p -Recurse -Force
+        $logLines += "- $(Get-Stamp) uninstall: removed folder $dir"
+        Write-Host "removed folder $dir"
     }
 }
 

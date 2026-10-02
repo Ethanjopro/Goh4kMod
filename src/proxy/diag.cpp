@@ -68,7 +68,7 @@ static std::string CleanTag(const std::string& t) {
     return o.empty() ? std::string("x") : o.substr(0, 48);
 }
 
-static std::wstring CapturePath(const std::string& name) { return ProjectDir() + L"\\captures\\" + Widen(name); }
+static std::wstring CapturePath(const std::string& name) { return CapturesDir() + L"\\" + Widen(name); }
 
 static void AppendFile(const std::wstring& path, const std::string& text) {
     HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
@@ -519,10 +519,10 @@ static void DumpShader(const std::string& id, LONG64 frame) {
         if (it != g_shaders.end()) code = it->second.code;
     }
     if (code.empty()) return Report(frame, "dumpshader " + id + ": unknown shader");
-    std::wstring dir = ProjectDir() + L"\\scratch\\shaders";
+    std::wstring dir = ShaderDumpDir();
     CreateDirectoryW(dir.c_str(), nullptr);
     WriteTextFile(dir + L"\\" + Widen(id) + L".cso", std::string(code.begin(), code.end()));
-    Report(frame, Fmt("dumpshader %s -> scratch\\shaders\\%s.cso (%zu bytes)", id.c_str(), id.c_str(), code.size()));
+    Report(frame, Fmt("dumpshader %s -> %ls\\%s.cso (%zu bytes)", id.c_str(), dir.c_str(), id.c_str(), code.size()));
 }
 
 static void PollRequests(LONG64 frame, double fps) {
@@ -604,7 +604,8 @@ void DiagBeforePresent(IDXGISwapChain* sc, WrappedDevice* device, LONG64 frame) 
 }
 
 void DiagAfterPresent(IDXGISwapChain*, WrappedDevice*, LONG64 frame, double fps) {
-    bool down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
+    if (!g_cfg.diagnostics) return;  // release default: no hotkey, no request polling
+    bool down =(GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
                 (GetAsyncKeyState(VK_F11) & 0x8000);
     if (down && !g_hotkeyDown) g_pendingCaptures.push_back("hotkey");
     g_hotkeyDown = down;

@@ -1,9 +1,12 @@
 # Goh4kMod log
 
 ## Status
-M1-M5 DONE (2026-10-02). The mod is INSTALLED: d3d11.dll + dxgi.dll in binaries\x64, config Scale=2. The
-game is set to 1920x1080 Fullscreen and renders 3840x2160 with the UI at its 1080p size.
-Run uninstall.cmd before playing multiplayer. Usage notes are in PLAN.md ("How to use").
+M1-M5 DONE (2026-10-02).
+- Release 1.0 is INSTALLED, the same files as build\release\Goh4kMod-1.0.zip: d3d11.dll, dxgi.dll and
+  goh4k.ini in binaries\x64.
+- The game is set to 1920x1080 Fullscreen and renders 3840x2160 with the UI at its 1080p size.
+- Run uninstall.cmd before playing multiplayer.
+- Maintainer notes are in NOTES.md; usage is in PLAN.md "How to use" and the zip's README.txt.
 
 ## Gotchas (symptom -> cause -> fix)
 - vcvars64.bat prints "'vswhere.exe' is not recognized" -> it calls vswhere by name internally -> harmless;
@@ -63,6 +66,26 @@ Run uninstall.cmd before playing multiplayer. Usage notes are in PLAN.md ("How t
 - 2026-10-02 14:12 uninstall check: folder matches the baseline (26 files)
 - 2026-10-02 14:13 deploy: d3d11.dll sha256 009E310D833E (new file)
 - 2026-10-02 14:13 deploy: dxgi.dll sha256 FD2866FB95DF (new file)
+- 2026-10-02 15:39 deploy: d3d11.dll sha256 B87BC088C44E (replaced our previous build)
+- 2026-10-02 15:39 deploy: dxgi.dll sha256 519B5418610C (replaced our previous build)
+- 2026-10-02 15:39 deploy: goh4k.ini sha256 9A90B6D0F702 (new file)
+- 2026-10-02 15:54 uninstall: removed d3d11.dll
+- 2026-10-02 15:54 uninstall: removed dxgi.dll
+- 2026-10-02 15:54 uninstall: removed goh4k.ini
+- 2026-10-02 15:54 uninstall: removed goh4k.log
+- 2026-10-02 15:54 uninstall check: folder matches the baseline (26 files)
+- 2026-10-02 16:00 deploy: d3d11.dll sha256 B87BC088C44E (new file)
+- 2026-10-02 16:00 deploy: dxgi.dll sha256 519B5418610C (new file)
+- 2026-10-02 16:00 deploy: goh4k.ini sha256 9A90B6D0F702 (new file)
+- 2026-10-02 16:25 deploy: d3d11.dll sha256 36A22782DFA2 (replaced our previous build)
+- 2026-10-02 16:25 deploy: dxgi.dll sha256 18E7C804F1FA (replaced our previous build)
+- 2026-10-02 16:25 deploy: goh4k.ini sha256 9A90B6D0F702 (replaced our previous build)
+- 2026-10-02 16:27 deploy: d3d11.dll sha256 E699A1A49DDD (replaced our previous build)
+- 2026-10-02 16:27 deploy: dxgi.dll sha256 87C26B5F6ED5 (replaced our previous build)
+- 2026-10-02 16:27 deploy: goh4k.ini sha256 9A90B6D0F702 (replaced our previous build)
+- 2026-10-02 16:34 deploy: d3d11.dll sha256 F8BC6A1097BE (replaced our previous build)
+- 2026-10-02 16:34 deploy: dxgi.dll sha256 D36F6917DECB (replaced our previous build)
+- 2026-10-02 16:34 deploy: goh4k.ini sha256 9A90B6D0F702 (replaced our previous build)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -260,3 +283,31 @@ Run uninstall.cmd before playing multiplayer. Usage notes are in PLAN.md ("How t
   - cursor 64x64, 159 fps, clean exit.
   The mod is left INSTALLED for Ethan.
 - Anti-cheat never reacted, across about 15 single-player sessions with the proxies and user32 hooks.
+
+### 2026-10-02 Shareable release build (Goh4kMod 1.0)
+- `build.cmd release` builds the DLLs with GOH4K_RELEASE and packages them as
+  build/release/Goh4kMod-1.0.zip (267 KB): d3d11.dll, dxgi.dll, goh4k.ini, README.txt and
+  THIRD-PARTY-NOTICES.txt (MinHook BSD-2).
+  - Settings and goh4k.log live next to the DLL. Scale=2 is the default; diagnostics are off.
+  - /PDBALTPATH keeps local paths out. package.ps1 checks that the DLLs don't contain the user name or
+    the project path.
+- Exe filter (`Exe=` key, default call_to_arms.exe): the editor, server and workshop exes get a pure
+  pass-through and write no log.
+- First-run fix (found by testing a user whose game is still at 4K):
+  - 2x is now dynamic. A resolution whose 2x doesn't fit the monitor runs natively, rendering and mouse
+    included.
+  - Switching between 1080p and 4K in Options keeps the real mode at 3840x2160, so Windows sends no
+    WM_SIZE and the game's mouse mapping went stale (clicks missed the dialogs). The mod now posts a resync
+    message that the subclass turns into WM_SIZE with the size at delivery time. An earlier version that
+    posted a size read at post time laid the UI out for 1382x824.
+  - Verified in game:
+    - stock 4K setting -> install -> launch: native, Options reachable;
+    - switch to 1920x1080 + YES: saved, 2x active, menus clickable;
+    - 2x -> 3840x2160 + YES: saved;
+    - back to 1080p: saved.
+- The final zip binaries were deployed with `deploy.cmd -Release` and played into a mission: 2x, cursor
+  64x64, 160 fps. Uninstall now also removes goh4k.ini, goh4k.log and goh4k-diagnostics; the self-test
+  covers this.
+- NOTES.md: architecture, what was learned, and a playbook for fixing the mod after a game update.
+- Mishap: a mis-aimed scripted click opened "reset video settings to default?". I answered NO and the
+  settings are intact.

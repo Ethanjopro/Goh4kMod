@@ -5,6 +5,7 @@
 // The game's exe and memory are never touched. Raw-input deltas pass through unchanged.
 #include "input.h"
 #include "diag.h"
+#include "scale.h"
 #include "MinHook.h"
 #include <intrin.h>
 #include <vector>
@@ -13,7 +14,7 @@
 
 namespace goh4k {
 
-static int S() { return g_cfg.scale; }
+static int S() { return Scaling() ? g_cfg.scale : 1; }  // 1 while 2x is off (scale.h)
 static uintptr_t g_exeBase = 0, g_exeEnd = 0;
 
 static bool FromGame(void* ret) { return (uintptr_t)ret >= g_exeBase && (uintptr_t)ret < g_exeEnd; }
@@ -203,7 +204,7 @@ static HBITMAP ScaleMaskBitmap(HBITMAP src, int s) {
 
 static HICON(WINAPI* Real_CreateIconIndirect)(PICONINFO);
 static HICON WINAPI Hook_CreateIconIndirect(PICONINFO ii) {
-    if (!ii || ii->fIcon || !ii->hbmMask || !FromGame(_ReturnAddress()) || FixOn("nocursorscale"))
+    if (!ii || ii->fIcon || !ii->hbmMask || S() < 2 || !FromGame(_ReturnAddress()) || FixOn("nocursorscale"))
         return Real_CreateIconIndirect(ii);
     ICONINFO big = *ii;
     big.xHotspot *= S();
@@ -226,13 +227,29 @@ static HICON WINAPI Hook_CreateIconIndirect(PICONINFO ii) {
 static HWND g_subclassed = nullptr;
 static WNDPROC g_gameProc = nullptr;
 
+// A private message; the subclass turns it into WM_SIZE with the client size at delivery time (a size read
+// when posting can be stale by then, e.g. during startup while the window goes fullscreen).
+static const UINT kResyncSizeMsg = WM_APP + 0x4B7;
+
 static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == kResyncSizeMsg) {
+        RECT r = {};
+        Real_GetClientRect(h, &r);
+        if (IsIconic(h) || r.right <= 0 || r.bottom <= 0) return 0;
+        LPARAM size = DownLParam(MAKELPARAM(r.right, r.bottom));
+        Log("input: WM_SIZE resync %ldx%ld real -> %dx%d", r.right, r.bottom, LOWORD(size), HIWORD(size));
+        return CallWindowProcW(g_gameProc, h, WM_SIZE, SIZE_RESTORED, size);
+    }
     switch (m) {
         case WM_SIZE: case WM_MOVE: l = DownLParam(l); break;
         case WM_DISPLAYCHANGE: l = MAKELPARAM(LOWORD(l) / S(), HIWORD(l) / S()); break;
         default: break;
     }
     return CallWindowProcW(g_gameProc, h, m, w, l);
+}
+
+void NotifyGameWindowSizeChanged() {
+    if (g_subclassed && PostMessageW(g_subclassed, kResyncSizeMsg, 0, 0)) Log("input: window size resync queued after a 2x switch");
 }
 
 void SubclassGameWindow(HWND hwnd) {

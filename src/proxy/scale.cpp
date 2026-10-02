@@ -1,12 +1,20 @@
 // 2x rendering rules (M3); see scale.h.
 #include "scale.h"
 #include "diag.h"
+#include "input.h"
 #include <mutex>
 #include <set>
 
 namespace goh4k {
 
 std::atomic<UINT> g_logicalW{0}, g_logicalH{0};
+std::atomic<bool> g_scaleActive{true};
+
+void SetScaleActive(bool active, const char* why) {
+    if (g_scaleActive.exchange(active) == active) return;
+    Log("2x %s (%s)", active ? "ACTIVE" : "OFF: the game's resolution doesn't fit at 2x, running natively", why);
+    NotifyGameWindowSizeChanged();
+}
 
 static const GUID kScaleGuid = {0x3b9f6e10, 0x2c47, 0x4d8a, {0x91, 0x0e, 0x5a, 0x7b, 0x3c, 0x2d, 0x1e, 0x6f}};
 

@@ -28,7 +28,7 @@ void WrappedContext::TargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT nu
     if (!first) first = dsv;
     for (UINT i = 0; i < numUavs && uavs && !first; ++i) first = uavs[i];
     ScaleTag t = {1, 0, 0};
-    UINT s = ScaleOfView(first, &t);
+    UINT s = Scaling() ? ScaleOfView(first, &t) : 1;
     m_targetScale = s;
     m_targetLogicalW = t.logicalW;
     m_targetLogicalH = t.logicalH;
@@ -39,10 +39,11 @@ void WrappedContext::TargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT nu
 }
 
 void WrappedContext::ApplyViewports() {
-    m_appliedScale = m_targetScale;
-    if (m_targetScale <= 1 || !m_numVp) return m_real->RSSetViewports(m_numVp, m_vp);
+    UINT ts = Scaling() ? m_targetScale : 1;  // the targets may predate 2x being switched off
+    m_appliedScale = ts;
+    if (ts <= 1 || !m_numVp) return m_real->RSSetViewports(m_numVp, m_vp);
     D3D11_VIEWPORT v[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-    float s = (float)m_targetScale;
+    float s = (float)ts;
     for (UINT i = 0; i < m_numVp; ++i) {
         v[i] = m_vp[i];
         // A viewport bigger than the target's logical size means the game already used real sizes.
@@ -62,9 +63,10 @@ void WrappedContext::ApplyViewports() {
 }
 
 void WrappedContext::ApplyScissors() {
-    if (m_targetScale <= 1 || !m_numSc) return m_real->RSSetScissorRects(m_numSc, m_sc);
+    UINT ts = Scaling() ? m_targetScale : 1;
+    if (ts <= 1 || !m_numSc) return m_real->RSSetScissorRects(m_numSc, m_sc);
     D3D11_RECT r[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-    LONG s = (LONG)m_targetScale;
+    LONG s = (LONG)ts;
     for (UINT i = 0; i < m_numSc; ++i)
         r[i] = {m_sc[i].left * s, m_sc[i].top * s, m_sc[i].right * s, m_sc[i].bottom * s};
     m_real->RSSetScissorRects(m_numSc, r);
@@ -73,7 +75,7 @@ void WrappedContext::ApplyScissors() {
 void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargets(UINT NumViews, ID3D11RenderTargetView* const* ppRenderTargetViews,
                                                          ID3D11DepthStencilView* pDepthStencilView) {
     m_real->OMSetRenderTargets(NumViews, ppRenderTargetViews, pDepthStencilView);
-    if (Scaling()) TargetsChanged(ppRenderTargetViews, NumViews, pDepthStencilView, nullptr, 0);
+    if (ScaleConfigured()) TargetsChanged(ppRenderTargetViews, NumViews, pDepthStencilView, nullptr, 0);
 }
 
 void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargetsAndUnorderedAccessViews(
@@ -82,7 +84,7 @@ void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargetsAndUnorderedAccessViews
     const UINT* pUAVInitialCounts) {
     m_real->OMSetRenderTargetsAndUnorderedAccessViews(NumRTVs, ppRenderTargetViews, pDepthStencilView, UAVStartSlot,
                                                       NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
-    if (Scaling() && NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+    if (ScaleConfigured() && NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
         TargetsChanged(ppRenderTargetViews, NumRTVs, pDepthStencilView,
                        NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? ppUnorderedAccessViews : nullptr,
                        NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? NumUAVs : 0);
@@ -98,11 +100,11 @@ static bool IsRealScreen(float x, float y, float w, float h) {
 }
 
 void STDMETHODCALLTYPE WrappedContext::RSSetViewports(UINT NumViewports, const D3D11_VIEWPORT* pViewports) {
-    if (!Scaling()) return m_real->RSSetViewports(NumViewports, pViewports);
+    if (!ScaleConfigured()) return m_real->RSSetViewports(NumViewports, pViewports);
     m_numVp = std::min<UINT>(NumViewports, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pViewports) memcpy(m_vp, pViewports, m_numVp * sizeof(D3D11_VIEWPORT));
     else m_numVp = 0;
-    for (UINT i = 0; i < m_numVp && !FromHbao(_ReturnAddress()); ++i)  // HBAO+ works at real size
+    for (UINT i = 0; i < m_numVp && Scaling() && !FromHbao(_ReturnAddress()); ++i)  // HBAO+ works at real size
         if (IsRealScreen(m_vp[i].TopLeftX, m_vp[i].TopLeftY, m_vp[i].Width, m_vp[i].Height)) {
             m_vp[i].Width = (float)g_logicalW;
             m_vp[i].Height = (float)g_logicalH;
@@ -111,11 +113,11 @@ void STDMETHODCALLTYPE WrappedContext::RSSetViewports(UINT NumViewports, const D
 }
 
 void STDMETHODCALLTYPE WrappedContext::RSSetScissorRects(UINT NumRects, const D3D11_RECT* pRects) {
-    if (!Scaling()) return m_real->RSSetScissorRects(NumRects, pRects);
+    if (!ScaleConfigured()) return m_real->RSSetScissorRects(NumRects, pRects);
     m_numSc = std::min<UINT>(NumRects, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pRects) memcpy(m_sc, pRects, m_numSc * sizeof(D3D11_RECT));
     else m_numSc = 0;
-    for (UINT i = 0; i < m_numSc && !FromHbao(_ReturnAddress()); ++i)
+    for (UINT i = 0; i < m_numSc && Scaling() && !FromHbao(_ReturnAddress()); ++i)
         if (IsRealScreen((float)m_sc[i].left, (float)m_sc[i].top, (float)(m_sc[i].right - m_sc[i].left),
                          (float)(m_sc[i].bottom - m_sc[i].top))) {
             m_sc[i].right = (LONG)g_logicalW;

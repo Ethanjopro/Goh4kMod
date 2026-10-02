@@ -216,6 +216,7 @@ private:
     void WriteStatus(ULONGLONG now);
     void LogState(const char* why);
     void UpdateLogicalSize();
+    void SetScaled(bool scaled, const char* why);
 
     static const UINT kMaxBuffers = 8;
     WrappedDevice* m_device;

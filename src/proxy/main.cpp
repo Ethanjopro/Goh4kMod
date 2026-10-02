@@ -50,6 +50,7 @@ extern "C" HRESULT WINAPI Proxy_D3D11CreateDeviceAndSwapChain(
     if (pSwapChainDesc && fromGame && g_cfg.wrap) {
         scaledDesc = *pSwapChainDesc;
         scaled = ScaleRequest(scaledDesc.OutputWindow, &scaledDesc.BufferDesc.Width, &scaledDesc.BufferDesc.Height);
+        if (ScaleConfigured()) SetScaleActive(scaled, "new swapchain");
         if (scaled) pSwapChainDesc = &scaledDesc;
     }
     auto real = (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)g_exports[EXP_D3D11CreateDeviceAndSwapChain];
@@ -120,6 +121,7 @@ extern "C" HRESULT WINAPI Goh4k_CreateSwapChain(IDXGIFactory* factory, IUnknown*
     if (pDesc && wd && g_cfg.wrap) {
         scaledDesc = *pDesc;
         scaled = ScaleRequest(scaledDesc.OutputWindow, &scaledDesc.BufferDesc.Width, &scaledDesc.BufferDesc.Height);
+        if (ScaleConfigured()) SetScaleActive(scaled, "new swapchain");
         if (scaled) pDesc = &scaledDesc;
     }
     HRESULT hr = factory->CreateSwapChain(wd ? (IUnknown*)wd->Real() : pDevice, pDesc, ppSwapChain);
@@ -145,6 +147,7 @@ extern "C" HRESULT WINAPI Goh4k_CreateSwapChainForHwnd(IDXGIFactory2* factory, I
     if (pDesc && wd && g_cfg.wrap) {
         scaledDesc = *pDesc;
         scaled = ScaleRequest(hWnd, &scaledDesc.Width, &scaledDesc.Height);
+        if (ScaleConfigured()) SetScaleActive(scaled, "new swapchain");
         if (scaled) pDesc = &scaledDesc;
     }
     HRESULT hr = factory->CreateSwapChainForHwnd(wd ? (IUnknown*)wd->Real() : pDevice, hWnd, pDesc, pFullscreenDesc,
@@ -162,7 +165,7 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(self);
         Init(self);
-        if (Scaling()) {
+        if (ScaleConfigured()) {
             // Real pixels everywhere, so the 2x mapping is exact whatever Windows' display scaling is.
             BOOL dpi = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             Log("2x mode: per-monitor-v2 DPI awareness %s (error %lu)", dpi ? "set" : "not set", dpi ? 0 : GetLastError());

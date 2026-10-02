@@ -13,17 +13,27 @@ static const GUID IID_Goh4kWrappedDevice = {0x7d1b6c9e, 0x3f0a, 0x4c55, {0x9a, 0
 
 namespace goh4k {
 
-// config/goh4k.ini, [proxy] section. Read once at DLL load; changing it needs a game restart, not a redeploy.
+// Settings, [proxy] section of goh4k.ini. Read once at DLL load (restart the game after editing).
+//   dev build:     <project>\config\goh4k.ini; logs in <project>\scratch\logs, diagnostics in <project>\captures
+//   release build (GOH4K_RELEASE, the shared zip): goh4k.ini next to the DLL; goh4k.log next to the DLL;
+//                  diagnostics (if enabled) in goh4k-diagnostics\ next to the DLL
 struct Config {
-    int wrap = 1;        // 0: forward exports and log device creation only; 1: wrap the game's device, contexts, swapchain
-    int scale = 1;       // 1: pass-through. 2x rendering arrives in M3.
-    int statusMs = 1000; // how often Present rewrites captures/status.txt
+    int wrap = 1;         // 0: forward exports and log device creation only; 1: wrap the game's device, contexts, swapchain
+#ifdef GOH4K_RELEASE
+    int scale = 2;        // 1: pass-through; 2: render screen-sized targets at 2x
+    int diagnostics = 0;  // 1: request.txt / hotkey / status.txt
+#else
+    int scale = 1;
+    int diagnostics = 1;
+#endif
+    int statusMs = 1000;  // how often Present rewrites status.txt
 };
 extern Config g_cfg;
 
 void Init(HMODULE self);                // DllMain(PROCESS_ATTACH): kernel32 calls only
 void Shutdown(bool processExit);        // DllMain(PROCESS_DETACH)
-const std::wstring& ProjectDir();
+const std::wstring& CapturesDir();      // diagnostics output (captures, traces, status.txt, request.txt)
+const std::wstring& ShaderDumpDir();    // dumpshader output
 void Log(const char* fmt, ...);
 void LogIidOnce(const char* who, REFIID riid);   // first QueryInterface of an IID we pass through
 void WriteTextFile(const std::wstring& path, const std::string& text);

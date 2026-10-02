@@ -15,7 +15,15 @@ struct ScaleTag {
 
 extern std::atomic<UINT> g_logicalW, g_logicalH;  // game's logical screen (swapchain) size; 0 = unknown
 
-inline bool Scaling() { return g_cfg.scale > 1; }
+// 2x is configured (Scale > 1): hooks are installed at load.
+inline bool ScaleConfigured() { return g_cfg.scale > 1; }
+
+// 2x is active right now. Set by the swapchain: when the game asks for a resolution whose 2x doesn't fit the
+// monitor (e.g. it is still set to native 4K), the mod steps aside completely (rendering and mouse) until a
+// resolution that fits is chosen. Starts active so the desktop the game sees at startup is the logical one.
+extern std::atomic<bool> g_scaleActive;
+inline bool Scaling() { return g_cfg.scale > 1 && g_scaleActive.load(std::memory_order_relaxed); }
+void SetScaleActive(bool active, const char* why);
 
 // 1 for untagged resources/views. Views are tagged at creation (cheap lookup); untagged views fall back
 // to their resource.

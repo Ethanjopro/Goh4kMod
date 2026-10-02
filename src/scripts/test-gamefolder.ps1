@@ -53,6 +53,17 @@ Check ((Get-Content "$T\deployed.txt") -match 'stock-backup\\d3d11.dll$') 'redep
 $r = Run 'uninstall.ps1'
 Check ($r.Code -eq 0 -and (Get-FileHash "$bin\d3d11.dll" -Algorithm SHA256).Hash -eq $stockHash) 'uninstall restores the stock file, exit 0'
 
+# C: release-style files (settings file, runtime log and diagnostics folder) are removed by uninstall
+New-Baseline
+$r = Run 'deploy.ps1'
+'Scale=2' | Set-Content "$bin\goh4k.ini"
+'log' | Set-Content "$bin\goh4k.log"
+New-Item -ItemType Directory -Force "$bin\goh4k-diagnostics" | Out-Null
+'x' | Set-Content "$bin\goh4k-diagnostics\status.txt"
+$r = Run 'uninstall.ps1'
+Check ($r.Code -eq 0 -and -not (Test-Path "$bin\goh4k.ini") -and -not (Test-Path "$bin\goh4k.log") -and
+    -not (Test-Path "$bin\goh4k-diagnostics")) 'uninstall removes goh4k.ini, goh4k.log and goh4k-diagnostics, exit 0'
+
 $log = Get-Content "$T\LOG.md" -Raw
 Check ($log -notmatch '\(none yet' -and ([regex]::Matches($log, '- \d{4}-\d\d-\d\d')).Count -ge 8) 'LOG.md gets dated lines under Game-folder changes'
 Check ($log.IndexOf('uninstall check') -lt $log.IndexOf('## Cleanup')) 'lines stay inside the section'
