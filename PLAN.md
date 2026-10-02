@@ -204,3 +204,20 @@ WineHooks HD mode has shown the trick works in this game.
   captures/ and referenced from LOG.md.
 - The final check: deploy, play a mission at 2x with every fix on, uninstall, and confirm the folder
   matches the Phase 1 baseline.
+
+## How to use (after M5)
+- **Install:** run `deploy.cmd`. It copies d3d11.dll and dxgi.dll into the game's binaries\x64, and records
+  the change in LOG.md.
+- **Game settings:** Resolution 1920x1080 and Fullscreen; borderless works too. The game then renders at
+  3840x2160 with the UI at its 1080p size.
+- **Before multiplayer:** run `uninstall.cmd` (double-clicking is fine). It removes both DLLs and checks the
+  folder against the original baseline. Set the resolution back to 3840x2160 if you play without the mod.
+- **Settings:** config\goh4k.ini in this folder (no redeploy needed; restart the game after editing):
+  - Scale=2 turns on 2x rendering; Scale=1 is pure pass-through.
+  - Wrap=0 forwards the DLL calls only and does nothing else.
+- **Diagnostics:** write commands to captures\request.txt while the game runs: `capture <tag>`,
+  `trace <tag>`, `dumprt <event>|ps:<id> [tag] [ds] [cb]`, `stats`,
+  `fix nocbpatch|nocursorscale on|off`. Ctrl+Shift+F11 also captures. Results go to captures\, and the log
+  goes to scratch\logs\.
+- **After a game update:** if Steam's file check runs, it doesn't remove our added DLLs. If the game
+  misbehaves after an update, run uninstall.cmd, then rebuild and deploy.
