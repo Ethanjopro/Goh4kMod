@@ -60,6 +60,13 @@ bool WantScaled(const D3D11_TEXTURE2D_DESC& d, bool initialData) {
     return false;
 }
 
+bool IsRealScreenTarget(const D3D11_TEXTURE2D_DESC& d) {
+    if (!Scaling() || d.Usage != D3D11_USAGE_DEFAULT || d.ArraySize != 1) return false;
+    if (!(d.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_UNORDERED_ACCESS))) return false;
+    UINT s = (UINT)g_cfg.scale, lw = g_logicalW, lh = g_logicalH;
+    return lw && d.Width == lw * s && d.Height == lh * s;
+}
+
 void LogScaledCreate(const D3D11_TEXTURE2D_DESC& d) {
     static std::atomic<int> n{0};
     int i = ++n;

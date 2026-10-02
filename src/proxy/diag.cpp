@@ -3,6 +3,7 @@
 #include "diag.h"
 #include "wrappers.h"
 #include "../shared/image.h"
+#include "unwrap.h"
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -25,7 +26,8 @@ static LONG64 g_traceFrame = 0;
 static std::vector<std::string> g_traceLines;
 static int g_traceEvent = 0;
 static std::atomic<int> g_traceGen{0};
-static int g_dumpEvent = -1;
+static int g_dumpEvent = -1;  // dumprt armed (also for ps: mode)
+static std::string g_dumpPs;  // dumprt ps:<id prefix>: match by pixel shader instead of event number
 static bool g_dumpDepth = false;
 static std::string g_dumpTag;
 static std::mutex g_clMutex;
@@ -82,6 +84,7 @@ static void Report(LONG64 frame, const std::string& msg) {
 
 std::string ResTag(ID3D11Resource* r) {
     if (!r) return "-";
+    r = UnwrapResource(r);
     UINT id = 0, size = sizeof(id);
     if (FAILED(r->GetPrivateData(kResIdGuid, &size, &id)) || size != sizeof(id)) {
         id = g_nextResId++;
@@ -249,6 +252,7 @@ static DXGI_FORMAT StagingFormat(DXGI_FORMAT f) {  // depth formats can't be sta
 // <name>.png, <name>-preview.png and <name>.txt into captures/ on a worker thread.
 static bool CaptureTexture(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Resource* res, const std::string& name,
                            const std::string& note, std::string* result) {
+    res = UnwrapResource(res);
     D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     res->GetType(&dim);
     if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return *result = "not a 2D texture", false;
@@ -340,7 +344,17 @@ void TraceRecord(WrappedContext* ctx, TraceKind kind, const std::string& call) {
 }
 
 void TraceAfterAction(WrappedContext* ctx) {
-    if (!ctx->IsImmediate() || g_dumpEvent < 0 || g_dumpEvent != g_traceEvent) return;
+    if (!ctx->IsImmediate() || g_dumpEvent < 0) return;
+    if (g_dumpPs.empty()) {
+        if (g_dumpEvent != g_traceEvent) return;
+    } else {  // dumprt ps:<id>: after the first immediate draw with that pixel shader
+        ID3D11PixelShader* ps = nullptr;
+        ctx->RealCtx()->PSGetShader(&ps, nullptr, nullptr);
+        bool match = ps && ShaderId(ps).compare(0, g_dumpPs.size(), g_dumpPs) == 0;
+        if (ps) ps->Release();
+        if (!match) return;
+        g_dumpPs.clear();
+    }
     g_dumpEvent = -1;
     ID3D11RenderTargetView* rtv = nullptr;
     ID3D11DepthStencilView* dsv = nullptr;
@@ -425,8 +439,11 @@ static void FinishTrace(IDXGISwapChain* sc) {
         if (!g_clLines.empty()) out += Fmt("\r\n%zu recorded command lists were not executed in this frame\r\n", g_clLines.size());
         g_clLines.clear();
     }
-    if (g_dumpEvent >= 0) out += Fmt("\r\ndumprt: event #%d was not reached\r\n", g_dumpEvent);
+    if (g_dumpEvent >= 0)
+        out += g_dumpPs.empty() ? Fmt("\r\ndumprt: event #%d was not reached\r\n", g_dumpEvent)
+                                : "\r\ndumprt: no draw with ps " + g_dumpPs + "\r\n";
     g_dumpEvent = -1;
+    g_dumpPs.clear();
     std::string name = Stamp() + "-" + g_traceTag + "-trace.txt";
     WriteTextFile(CapturePath(name), out);
     Report(g_traceFrame, Fmt("trace -> captures\\%s (%d events)", name.c_str(), g_traceEvent));
@@ -500,10 +517,12 @@ static void PollRequests(LONG64 frame, double fps) {
             Report(frame, "trace started");
         } else if (a[0] == "dumprt" && a.size() >= 2) {
             StartTrace(CleanTag(arg(2, "dump")), frame);
-            g_dumpEvent = atoi(a[1].c_str());
+            g_dumpPs = a[1].rfind("ps:", 0) == 0 ? a[1].substr(3) : std::string();
+            g_dumpEvent = g_dumpPs.empty() ? atoi(a[1].c_str()) : 0;
             g_dumpDepth = arg(3, "") == "ds";
             g_dumpTag = CleanTag(arg(2, "dump"));
-            Report(frame, Fmt("dumprt armed for event #%d", g_dumpEvent));
+            Report(frame, g_dumpPs.empty() ? Fmt("dumprt armed for event #%d", g_dumpEvent)
+                                           : "dumprt armed for the first draw with ps " + g_dumpPs);
         } else if (a[0] == "stats") {
             WriteStats(CleanTag(arg(1, "stats")), frame, fps);
         } else if (a[0] == "fix" && a.size() >= 3) {

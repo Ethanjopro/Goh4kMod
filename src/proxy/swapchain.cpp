@@ -5,6 +5,7 @@
 #include "diag.h"
 #include "input.h"
 #include "scale.h"
+#include "texture.h"
 
 namespace goh4k {
 
@@ -120,13 +121,22 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDevice(REFIID riid, void** ppDevi
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) {
-    HRESULT hr = m_real->GetBuffer(Buffer, riid, ppSurface);
+    // In 2x mode the game gets a wrapper whose GetDesc reports the logical size (texture.cpp).
+    bool wrap = m_scaled && ppSurface && Buffer < kMaxBuffers &&
+                (riid == __uuidof(ID3D11Texture2D) || riid == __uuidof(ID3D11Resource));
+    HRESULT hr = m_real->GetBuffer(Buffer, wrap ? __uuidof(ID3D11Texture2D) : riid, ppSurface);
     if (SUCCEEDED(hr) && m_scaled && ppSurface && *ppSurface) {
         ID3D11Resource* r = nullptr;
         if (SUCCEEDED(static_cast<IUnknown*>(*ppSurface)->QueryInterface(IID_PPV_ARGS(&r)))) {
             TagResource(r, {(UINT)g_cfg.scale, (UINT)g_logicalW, (UINT)g_logicalH});
             r->Release();
         }
+    }
+    if (SUCCEEDED(hr) && wrap) {
+        auto* real = static_cast<ID3D11Texture2D*>(*ppSurface);
+        if (!m_buffers[Buffer] || m_buffers[Buffer]->Real() != real)
+            m_buffers[Buffer] = new WrappedTexture2D(real, m_device, g_logicalW, g_logicalH);
+        *ppSurface = static_cast<ID3D11Texture2D*>(m_buffers[Buffer]);  // carries GetBuffer's reference
     }
     if (!m_loggedBuffer) {
         m_loggedBuffer = true;
@@ -216,6 +226,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers(UINT BufferCount, UINT
     if (SUCCEEDED(hr) && Scaling()) {
         m_scaled = scaled;
         UpdateLogicalSize();
+        for (auto& b : m_buffers) b = nullptr;  // new buffers; old wrappers are left to leak (see texture.cpp)
     }
     LogState("after ResizeBuffers");
     return hr;
@@ -236,6 +247,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers1(UINT BufferCount, UIN
     if (SUCCEEDED(hr) && Scaling()) {
         m_scaled = scaled;
         UpdateLogicalSize();
+        for (auto& b : m_buffers) b = nullptr;
     }
     LogState("after ResizeBuffers1");
     return hr;

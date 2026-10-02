@@ -103,7 +103,7 @@ int wmain(int argc, wchar_t** argv) {
             printf("downscaled %dx%d by %d to compare\n", larger.w, larger.h, larger.w / smaller.w);
             larger = img::Downscale(larger, larger.w / smaller.w);
         }
-        double sum = 0, sq = 0;
+        double sum = 0, sq = 0, signedSum = 0;
         size_t over16 = 0, over48 = 0, n = (size_t)a.w * a.h;
         Bgr heat;
         heat.w = a.w;
@@ -112,7 +112,9 @@ int wmain(int argc, wchar_t** argv) {
         for (size_t i = 0; i < n; ++i) {
             int m = 0;
             for (int c = 0; c < 3; ++c) {
-                int d = abs((int)a.px[i * 3 + c] - (int)b.px[i * 3 + c]);
+                int sd = (int)a.px[i * 3 + c] - (int)b.px[i * 3 + c];
+                int d = abs(sd);
+                signedSum += sd;
                 sum += d;
                 sq += (double)d * d;
                 m = std::max(m, d);
@@ -125,8 +127,9 @@ int wmain(int argc, wchar_t** argv) {
             heat.px[i * 3 + 2] = v;
         }
         double mse = sq / (n * 3.0);
-        printf("diff %dx%d: mean abs %.2f, PSNR %.1f dB, >16: %.2f%%, >48: %.2f%%\n", a.w, a.h, sum / (n * 3.0),
-               mse > 0 ? 10 * log10(255.0 * 255.0 / mse) : 99.0, 100.0 * over16 / n, 100.0 * over48 / n);
+        printf("diff %dx%d: mean abs %.2f, mean a-b %+.2f, PSNR %.1f dB, >16: %.2f%%, >48: %.2f%%\n", a.w, a.h,
+               sum / (n * 3.0), signedSum / (n * 3.0), mse > 0 ? 10 * log10(255.0 * 255.0 / mse) : 99.0,
+               100.0 * over16 / n, 100.0 * over48 / n);
         if (argc >= 5) Save(argv[4], heat);
         return 0;
     }

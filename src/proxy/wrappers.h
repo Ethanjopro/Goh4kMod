@@ -208,8 +208,10 @@ private:
     void LogState(const char* why);
     void UpdateLogicalSize();
 
+    static const UINT kMaxBuffers = 8;
     WrappedDevice* m_device;
     bool m_scaled = false;  // real buffers are Scale x the size the game believes
+    class WrappedTexture2D* m_buffers[kMaxBuffers] = {};  // 2x mode: what GetBuffer hands the game
     int m_level = 0;  // highest IDXGISwapChainN the real object supports
     LONG64 m_frames = 0;
     LONG64 m_framesAtStatus = 0;

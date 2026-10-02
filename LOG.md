@@ -1,7 +1,7 @@
 # Goh4kMod log
 
 ## Status
-M1+M2 done (2026-10-02). Next: M3 (2x on the main menu). Game set to 1920x1080 fullscreen (was 3840x2160).
+M1-M3 done (2026-10-02). Next: M4 (mission passes). Game set to 1920x1080 fullscreen (was 3840x2160), Scale=2.
 Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED during development.
 
 ## Gotchas (symptom -> cause -> fix)
@@ -17,6 +17,11 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
   file that is still open -> read the file itself.
 - PowerShell 5.1: casting the empty output of a function to List[object] gives $null, and @() on a generic
   List throws "Argument types do not match" -> build lists with New-Object and pass .ToArray().
+- 2x mode: the game sizes some targets from texture GetDesc (real) and sets viewports from its logical
+  size. Symptoms: cut text labels, quarter-screen or black scene, blur everywhere -> backbuffer wrapper
+  (logical GetDesc, unwrapped by the generated forwarders), real-size targets tagged as 2x, HBAO+ calls
+  exempt by module address. Diagnose with dumprt ps:<shader id> per post stage.
+- proxytest while the game runs -> the game consumes capturesequest.txt -> run tests with the game closed.
 - drive.exe click path at native 4K UI (coordinates change once the game runs at 1080p logical):
   SINGLEPLAYER 1600,1192 > CAMPAIGN 1420,630 > SELECT CAMPAIGN 1420,728 > USSR 2240,980 > first campaign
   1420,632 > first mission 1420,608 > Easy 1322,1525 (starts loading). Esc/space skip the intro; space
@@ -34,6 +39,18 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
 - 2026-10-02 12:15 uninstall check: folder matches the baseline (26 files)
 - 2026-10-02 12:26 deploy: d3d11.dll sha256 10B5A6EE919A (new file)
 - 2026-10-02 12:26 deploy: dxgi.dll sha256 FBF0679A1C16 (new file)
+- 2026-10-02 12:45 deploy: d3d11.dll sha256 36D988FF4FA7 (replaced our previous build)
+- 2026-10-02 12:45 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 12:48 deploy: d3d11.dll sha256 CDC2FC277A17 (replaced our previous build)
+- 2026-10-02 12:48 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 13:18 deploy: d3d11.dll sha256 2578D970D812 (replaced our previous build)
+- 2026-10-02 13:18 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 13:25 deploy: d3d11.dll sha256 E9CB204DDB61 (replaced our previous build)
+- 2026-10-02 13:25 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 13:31 deploy: d3d11.dll sha256 3D942AE62D77 (replaced our previous build)
+- 2026-10-02 13:31 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 13:35 deploy: d3d11.dll sha256 A253123E00B5 (replaced our previous build)
+- 2026-10-02 13:35 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
 
 ## Cleanup
 (none yet; anything a tool writes outside the project folder goes here)
@@ -140,3 +157,34 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
   SINGLEPLAYER 640,652 > CAMPAIGN 536,194 > SELECT CAMPAIGN 536,290 > USSR 1274,448 > ZA RODINU 536,194 >
   ABSOLUTE ZERO 534,172 > Easy 436,886. CONTINUE 1840,38. In the game menu, EXIT 958,658; confirm YES
   1028,597. Top bar: HOME 480,24, EXIT 1438,24. Options: top bar OPTIONS.
+
+### 2026-10-02 M3: 2x on the main menu (and in a mission), DONE
+- Game at 1920x1080 fullscreen with Scale=2. The proxy:
+  - creates the swapchain at 3840x2160 and switches the display mode to 3840x2160; GetDesc reports 1920x1080;
+  - hooks 14 user32 functions (MinHook) for calls from the exe only;
+  - subclasses the game window for WM_SIZE, WM_MOVE and WM_DISPLAYCHANGE;
+  - creates RT/DS/UAV textures at the logical screen size or 1/2..1/8 of it at 2x, and scales
+    viewports, scissors and copy boxes for them.
+- Fixes found along the way (all in the gotchas below):
+  1. Cut-off UI labels: the screen viewport comes from the backbuffer's texture desc, which was real
+     size. Fixed by normalizing it (later by the backbuffer wrapper).
+  2. Black or quarter scene: the HDR scene and post targets were sized from the real backbuffer desc.
+     Fixed with a backbuffer wrapper whose GetDesc reports logical size, unwrapped everywhere through the
+     generated forwarders.
+  3. HBAO+ darkened everything: our rules scaled its 960x540 quarter-res targets and normalized its
+     real viewports. Its calls are now recognized by module address and left at real size. Its RenderAO
+     hook was unneeded and has been removed; no HBAO+ code is hooked.
+  4. Whole frame blurred: the linear-depth target was sized from our scaled depth texture's real desc and
+     drawn with a logical viewport, so DOF focused on garbage. Targets created at exactly real screen size
+     are now tagged as 2x.
+- Evidence in captures/:
+  - Menu 20261002-124828-menu2xb vs native 20261002-123039-menu1080: whole frame mean abs 0.36, PSNR
+    42.5 dB; button row 47.1 dB. m3-profile-side.png shows the layout is identical.
+  - Mission 20261002-133714-mission2xd vs 20261002-123243-mission1080: m3-sharpness-trees2.png shows 4K
+    detail. A static region has signed mean +0.12, so exposure is unchanged.
+  - Mouse: m3-01 (SINGLEPLAYER at 2x coordinates), m3-04-wheel (list scrolled), m3-move.png and
+    m3-rightclick-move.png (squad card select plus right-click move). The cursor reaches all 4 corners, and
+    edge-pan scrolls the camera.
+- Cosmetic: 1-pixel UI lines come out thinner at 2x. UI text stays 1080p resolution, as intended.
+- Still to verify in M4: the glow MSAA downsample (copy.hlsl Load(uv*src_size)), the FXAA texel size,
+  soft particles, water, Conquest unit cards and the tech tree. M5: the cursor is half size.

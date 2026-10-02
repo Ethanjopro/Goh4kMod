@@ -1,6 +1,7 @@
 // Goh4kMod d3d11.dll proxy: DLL entry, the d3d11 exports we implement, and the entry points our dxgi.dll
 // proxy calls. Every other export is an ml64 jump stub (gen/exports.asm) through g_exports.
 #include "wrappers.h"
+#include "hbao.h"
 #include "input.h"
 #include "scale.h"
 #include "gen/exports_gen.h"
@@ -57,6 +58,7 @@ extern "C" HRESULT WINAPI Proxy_D3D11CreateDeviceAndSwapChain(
     Log("  -> 0x%08lx, feature level 0x%x", hr, pFeatureLevel ? (unsigned)*pFeatureLevel : 0u);
     if (FAILED(hr) || !fromGame || !g_cfg.wrap) return hr;
 
+    FindHbaoModule();  // 2x mode only; HBAO+ is a static import of the game, loaded by now
     WrappedDevice* device = nullptr;
     if (ppDevice && *ppDevice) {
         device = new WrappedDevice(*ppDevice, ppImmediateContext ? *ppImmediateContext : nullptr);

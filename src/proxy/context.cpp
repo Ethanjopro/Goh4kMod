@@ -4,7 +4,10 @@
 #include "wrappers.h"
 #include "diag.h"
 #include "scale.h"
+#include "hbao.h"
 #include <algorithm>
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
 
 namespace goh4k {
 
@@ -83,11 +86,25 @@ void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargetsAndUnorderedAccessViews
                        NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? NumUAVs : 0);
 }
 
+// The game sizes its screen viewport from the backbuffer texture's own GetDesc, which reports the real
+// size. A viewport/scissor covering exactly the real screen is stored as the logical screen: on scaled
+// targets that re-applies to the same real size, and on unscaled targets (UI label textures drawn with
+// the stale screen viewport) it gives what native 1080p would have used.
+static bool IsRealScreen(float x, float y, float w, float h) {
+    UINT s = (UINT)g_cfg.scale, lw = g_logicalW, lh = g_logicalH;
+    return lw && x == 0 && y == 0 && w == (float)(lw * s) && h == (float)(lh * s);
+}
+
 void STDMETHODCALLTYPE WrappedContext::RSSetViewports(UINT NumViewports, const D3D11_VIEWPORT* pViewports) {
     if (!Scaling()) return m_real->RSSetViewports(NumViewports, pViewports);
     m_numVp = std::min<UINT>(NumViewports, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pViewports) memcpy(m_vp, pViewports, m_numVp * sizeof(D3D11_VIEWPORT));
     else m_numVp = 0;
+    for (UINT i = 0; i < m_numVp && !FromHbao(_ReturnAddress()); ++i)  // HBAO+ works at real size
+        if (IsRealScreen(m_vp[i].TopLeftX, m_vp[i].TopLeftY, m_vp[i].Width, m_vp[i].Height)) {
+            m_vp[i].Width = (float)g_logicalW;
+            m_vp[i].Height = (float)g_logicalH;
+        }
     ApplyViewports();
 }
 
@@ -96,6 +113,12 @@ void STDMETHODCALLTYPE WrappedContext::RSSetScissorRects(UINT NumRects, const D3
     m_numSc = std::min<UINT>(NumRects, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pRects) memcpy(m_sc, pRects, m_numSc * sizeof(D3D11_RECT));
     else m_numSc = 0;
+    for (UINT i = 0; i < m_numSc && !FromHbao(_ReturnAddress()); ++i)
+        if (IsRealScreen((float)m_sc[i].left, (float)m_sc[i].top, (float)(m_sc[i].right - m_sc[i].left),
+                         (float)(m_sc[i].bottom - m_sc[i].top))) {
+            m_sc[i].right = (LONG)g_logicalW;
+            m_sc[i].bottom = (LONG)g_logicalH;
+        }
     ApplyScissors();
 }
 
@@ -198,6 +221,8 @@ void STDMETHODCALLTYPE WrappedContext::DispatchIndirect(ID3D11Buffer* pBufferFor
 void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion(ID3D11Resource* pDstResource, UINT DstSubresource, UINT DstX,
                                                             UINT DstY, UINT DstZ, ID3D11Resource* pSrcResource,
                                                             UINT SrcSubresource, const D3D11_BOX* pSrcBox) {
+    pDstResource = UnwrapResource(pDstResource);
+    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
     if (Scaling()) {
@@ -221,6 +246,8 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
                                                              UINT DstX, UINT DstY, UINT DstZ,
                                                              ID3D11Resource* pSrcResource, UINT SrcSubresource,
                                                              const D3D11_BOX* pSrcBox, UINT CopyFlags) {
+    pDstResource = UnwrapResource(pDstResource);
+    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion1 dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
     if (Scaling()) {
@@ -242,6 +269,8 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
 }
 
 void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource, ID3D11Resource* pSrcResource) {
+    pDstResource = UnwrapResource(pDstResource);
+    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "CopyResource dst=%s src=%s", ResTag(pDstResource).c_str(),
                  ResTag(pSrcResource).c_str());
     if (Scaling() && ScaleOf(pDstResource) != ScaleOf(pSrcResource))
@@ -253,6 +282,7 @@ void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource
 void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                         const D3D11_BOX* pDstBox, const void* pSrcData,
                                                         UINT SrcRowPitch, UINT SrcDepthPitch) {
+    pDstResource = UnwrapResource(pDstResource);
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     if (Scaling() && ScaleOf(pDstResource) > 1) NoteOnce("update-scaled-resource", "dst " + ResTag(pDstResource));
@@ -263,6 +293,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstRes
 void STDMETHODCALLTYPE WrappedContext::UpdateSubresource1(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                          const D3D11_BOX* pDstBox, const void* pSrcData,
                                                          UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags) {
+    pDstResource = UnwrapResource(pDstResource);
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource1 dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     m_real->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
@@ -326,6 +357,8 @@ void STDMETHODCALLTYPE WrappedContext::GenerateMips(ID3D11ShaderResourceView* pS
 void STDMETHODCALLTYPE WrappedContext::ResolveSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                          ID3D11Resource* pSrcResource, UINT SrcSubresource,
                                                          DXGI_FORMAT Format) {
+    pDstResource = UnwrapResource(pDstResource);
+    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "ResolveSubresource dst=%s/%u src=%s/%u fmt=%d", ResTag(pDstResource).c_str(),
                  DstSubresource, ResTag(pSrcResource).c_str(), SrcSubresource, (int)Format);
     if (Scaling() && ScaleOf(pDstResource) != ScaleOf(pSrcResource))

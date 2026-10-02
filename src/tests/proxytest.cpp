@@ -246,11 +246,25 @@ int main() {
         sc->GetDesc(&d);
         ID3D11Texture2D* bb = nullptr;
         sc->GetBuffer(0, IID_PPV_ARGS(&bb));
-        D3D11_TEXTURE2D_DESC bd = {};
-        if (bb) bb->GetDesc(&bd), bb->Release();
+        D3D11_TEXTURE2D_DESC bd = {}, rd = {};
+        if (bb) {
+            bb->GetDesc(&bd);  // the wrapper: logical size
+            ID3D11RenderTargetView* v = nullptr;
+            dev->CreateRenderTargetView(bb, nullptr, &v);  // must be unwrapped to work at all
+            if (v) {
+                ID3D11Resource* r = nullptr;
+                v->GetResource(&r);  // the real texture
+                if (r) static_cast<ID3D11Texture2D*>(r)->GetDesc(&rd), r->Release();
+                v->Release();
+            }
+            bb->Release();
+        }
         CHECK(d.BufferDesc.Width == 800 && d.BufferDesc.Height == 450, "2x: GetDesc reports logical 800x450 (%ux%u)",
               d.BufferDesc.Width, d.BufferDesc.Height);
-        CHECK(bd.Width == 1600 && bd.Height == 900, "2x: real backbuffer is 1600x900 (%ux%u)", bd.Width, bd.Height);
+        CHECK(bd.Width == 800 && bd.Height == 450, "2x: backbuffer GetDesc reports logical 800x450 (%ux%u)", bd.Width,
+              bd.Height);
+        CHECK(rd.Width == 1600 && rd.Height == 900, "2x: real backbuffer behind the view is 1600x900 (%ux%u)", rd.Width,
+              rd.Height);
         auto make = [&](UINT w, UINT h, UINT bind, UINT* rw, UINT* rh) {
             D3D11_TEXTURE2D_DESC td = {w, h, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT, bind, 0, 0};
             ID3D11Texture2D* t = nullptr;

@@ -2,8 +2,11 @@
 // creation (recorded for stats and traces). M3 adds the 2x rules here.
 #include "wrappers.h"
 #include "diag.h"
+#include "hbao.h"
 #include "scale.h"
 #include <atomic>
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
 
 namespace goh4k {
 
@@ -26,11 +29,16 @@ static T* MostDerived(IUnknown* real, const IID* const (&ids)[N], int* level) {
 static const IID* const kContextIds[] = {&__uuidof(ID3D11DeviceContext1), &__uuidof(ID3D11DeviceContext2),
                                          &__uuidof(ID3D11DeviceContext3), &__uuidof(ID3D11DeviceContext4)};
 
+static void* g_contextVtbl = nullptr;
+
+bool IsOurContext(ID3D11DeviceContext* ctx) { return ctx && g_contextVtbl && *(void**)ctx == g_contextVtbl; }
+
 WrappedContext::WrappedContext(ID3D11DeviceContext* real, WrappedDevice* device, bool immediate)
     : m_device(device), m_immediate(immediate) {
     static std::atomic<int> nextDeferredId{1};
     m_real = MostDerived<ID3D11DeviceContext4>(real, kContextIds, &m_level);
     if (!immediate) m_id = nextDeferredId++;
+    g_contextVtbl = *(void**)this;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedContext::QueryInterface(REFIID riid, void** ppv) {
@@ -199,7 +207,8 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDeferredContext3(UINT flags, ID3D
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_DESC* pDesc,
                                                          const D3D11_SUBRESOURCE_DATA* pInitialData,
                                                          ID3D11Texture2D** ppTexture2D) {
-    if (pDesc && ppTexture2D && WantScaled(*pDesc, pInitialData != nullptr)) {
+    // HBAO+ works at real size (hbao.cpp), so its own targets are never scaled.
+    if (pDesc && ppTexture2D && WantScaled(*pDesc, pInitialData != nullptr) && !FromHbao(_ReturnAddress())) {
         D3D11_TEXTURE2D_DESC d = *pDesc;
         d.Width *= g_cfg.scale;
         d.Height *= g_cfg.scale;
@@ -213,7 +222,16 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_D
         Log("scaled CreateTexture2D %ux%u failed 0x%08lx; creating it unscaled", d.Width, d.Height, hr);
     }
     HRESULT hr = m_real->CreateTexture2D(pDesc, pInitialData, ppTexture2D);
-    if (SUCCEEDED(hr) && pDesc && ppTexture2D) RecordTextureCreate(*pDesc, pInitialData != nullptr);
+    if (SUCCEEDED(hr) && pDesc && ppTexture2D) {
+        RecordTextureCreate(*pDesc, pInitialData != nullptr);
+        // Targets the game sized from a real-sized texture (e.g. our scaled depth buffer) are already 2x of
+        // the logical screen: tag them so the logical viewports the game sets on them get doubled too.
+        if (*ppTexture2D && IsRealScreenTarget(*pDesc) && !FromHbao(_ReturnAddress())) {
+            TagResource(*ppTexture2D, {(UINT)g_cfg.scale, (UINT)g_logicalW, (UINT)g_logicalH});
+            NoteOnce("real-size-target-tagged", Fmt("%ux%u fmt=%d bind=0x%x created at real size; tagged as 2x",
+                                                    pDesc->Width, pDesc->Height, (int)pDesc->Format, pDesc->BindFlags));
+        }
+    }
     return hr;
 }
 
@@ -222,7 +240,7 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D1(const D3D11_TEXTURE2D_
                                                           ID3D11Texture2D1** ppTexture2D) {
     D3D11_TEXTURE2D_DESC d = {};
     if (pDesc1) memcpy(&d, pDesc1, sizeof(d));  // DESC1 = DESC + TextureLayout
-    if (pDesc1 && ppTexture2D && WantScaled(d, pInitialData != nullptr)) {
+    if (pDesc1 && ppTexture2D && WantScaled(d, pInitialData != nullptr) && !FromHbao(_ReturnAddress())) {
         D3D11_TEXTURE2D_DESC1 d1 = *pDesc1;
         d1.Width *= g_cfg.scale;
         d1.Height *= g_cfg.scale;
@@ -243,6 +261,7 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D1(const D3D11_TEXTURE2D_
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateRenderTargetView(ID3D11Resource* pResource,
                                                                 const D3D11_RENDER_TARGET_VIEW_DESC* pDesc,
                                                                 ID3D11RenderTargetView** ppRTView) {
+    pResource = UnwrapResource(pResource);
     HRESULT hr = m_real->CreateRenderTargetView(pResource, pDesc, ppRTView);
     if (SUCCEEDED(hr) && ppRTView && *ppRTView && Scaling()) TagView(*ppRTView);
     return hr;
@@ -251,6 +270,7 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateRenderTargetView(ID3D11Resource* 
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateRenderTargetView1(ID3D11Resource* pResource,
                                                                  const D3D11_RENDER_TARGET_VIEW_DESC1* pDesc1,
                                                                  ID3D11RenderTargetView1** ppRTView1) {
+    pResource = UnwrapResource(pResource);
     HRESULT hr = m_real->CreateRenderTargetView1(pResource, pDesc1, ppRTView1);
     if (SUCCEEDED(hr) && ppRTView1 && *ppRTView1 && Scaling()) TagView(*ppRTView1);
     return hr;
@@ -259,6 +279,7 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateRenderTargetView1(ID3D11Resource*
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDepthStencilView(ID3D11Resource* pResource,
                                                                 const D3D11_DEPTH_STENCIL_VIEW_DESC* pDesc,
                                                                 ID3D11DepthStencilView** ppDepthStencilView) {
+    pResource = UnwrapResource(pResource);
     HRESULT hr = m_real->CreateDepthStencilView(pResource, pDesc, ppDepthStencilView);
     if (SUCCEEDED(hr) && ppDepthStencilView && *ppDepthStencilView && Scaling()) TagView(*ppDepthStencilView);
     return hr;
