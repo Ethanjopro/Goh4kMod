@@ -5,7 +5,8 @@
 // request.txt, one command per line:
 //   capture [tag]              backbuffer as PNG (+ quarter-size preview + .txt sidecar)
 //   trace [tag]                every draw/dispatch/clear/copy of the next frame with its state
-//   dumprt <event>|ps:<id> [tag] [ds]  trace the next frame and save render target 0 (or the depth target)
+//   dumprt <event>|ps:<id> [tag] [ds] [cb]  trace the next frame and save render target 0 (or the depth
+//                              target; cb also prints the pixel shader constant buffers into the trace)
 //                              right after immediate-context event <event>, or after the first draw
 //                              whose pixel shader id starts with <id>
 //   stats [tag]                textures created so far (by size/format/flags), shaders, fixes

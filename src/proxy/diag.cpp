@@ -29,6 +29,7 @@ static std::atomic<int> g_traceGen{0};
 static int g_dumpEvent = -1;  // dumprt armed (also for ps: mode)
 static std::string g_dumpPs;  // dumprt ps:<id prefix>: match by pixel shader instead of event number
 static bool g_dumpDepth = false;
+static bool g_dumpCb = false;  // dumprt ... cb: also print the pixel shader's constant buffers
 static std::string g_dumpTag;
 static std::mutex g_clMutex;
 static std::unordered_map<ID3D11CommandList*, std::vector<std::string>> g_clLines;
@@ -343,6 +344,36 @@ void TraceRecord(WrappedContext* ctx, TraceKind kind, const std::string& call) {
     }
 }
 
+// dumprt ... cb: the pixel shader's bound constant buffers at the matched draw, as float4 rows (copied
+// through a staging buffer; a one-off stall, fine for diagnostics).
+static void DumpPixelConstants(WrappedContext* ctx) {
+    ID3D11Buffer* cbs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
+    ctx->RealCtx()->PSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, cbs);
+    std::vector<std::string> lines;
+    for (UINT slot = 0; slot < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; ++slot) {
+        if (!cbs[slot]) continue;
+        D3D11_BUFFER_DESC d;
+        cbs[slot]->GetDesc(&d);
+        D3D11_BUFFER_DESC sd = {d.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0};
+        ID3D11Buffer* staging = nullptr;
+        D3D11_MAPPED_SUBRESOURCE m = {};
+        if (SUCCEEDED(ctx->Device()->Real()->CreateBuffer(&sd, nullptr, &staging))) {
+            ctx->RealCtx()->CopyResource(staging, cbs[slot]);
+            if (SUCCEEDED(ctx->RealCtx()->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+                const float* f = (const float*)m.pData;
+                lines.push_back(Fmt("    cb b%u (%u bytes, %s):", slot, d.ByteWidth, ResTag(cbs[slot]).c_str()));
+                for (UINT c = 0; c < d.ByteWidth / 16 && c < 32; ++c)
+                    lines.push_back(Fmt("      c%-2u %g, %g, %g, %g", c, f[c * 4], f[c * 4 + 1], f[c * 4 + 2], f[c * 4 + 3]));
+                ctx->RealCtx()->Unmap(staging, 0);
+            }
+            staging->Release();
+        }
+        cbs[slot]->Release();
+    }
+    std::lock_guard<std::mutex> lock(g_traceMutex);
+    g_traceLines.insert(g_traceLines.end(), lines.begin(), lines.end());
+}
+
 void TraceAfterAction(WrappedContext* ctx) {
     if (!ctx->IsImmediate() || g_dumpEvent < 0) return;
     if (g_dumpPs.empty()) {
@@ -356,6 +387,7 @@ void TraceAfterAction(WrappedContext* ctx) {
         g_dumpPs.clear();
     }
     g_dumpEvent = -1;
+    if (g_dumpCb) DumpPixelConstants(ctx);
     ID3D11RenderTargetView* rtv = nullptr;
     ID3D11DepthStencilView* dsv = nullptr;
     ctx->RealCtx()->OMGetRenderTargets(1, &rtv, &dsv);
@@ -519,7 +551,8 @@ static void PollRequests(LONG64 frame, double fps) {
             StartTrace(CleanTag(arg(2, "dump")), frame);
             g_dumpPs = a[1].rfind("ps:", 0) == 0 ? a[1].substr(3) : std::string();
             g_dumpEvent = g_dumpPs.empty() ? atoi(a[1].c_str()) : 0;
-            g_dumpDepth = arg(3, "") == "ds";
+            g_dumpDepth = arg(3, "") == "ds" || arg(4, "") == "ds";
+            g_dumpCb = arg(3, "") == "cb" || arg(4, "") == "cb";
             g_dumpTag = CleanTag(arg(2, "dump"));
             Report(frame, g_dumpPs.empty() ? Fmt("dumprt armed for event #%d", g_dumpEvent)
                                            : "dumprt armed for the first draw with ps " + g_dumpPs);

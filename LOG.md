@@ -51,6 +51,10 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
 - 2026-10-02 13:31 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
 - 2026-10-02 13:35 deploy: d3d11.dll sha256 A253123E00B5 (replaced our previous build)
 - 2026-10-02 13:35 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 13:45 deploy: d3d11.dll sha256 7928404FF685 (replaced our previous build)
+- 2026-10-02 13:45 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
+- 2026-10-02 13:52 deploy: d3d11.dll sha256 B75D8D1BB7AE (replaced our previous build)
+- 2026-10-02 13:52 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
 
 ## Cleanup
 (none yet; anything a tool writes outside the project folder goes here)
@@ -188,3 +192,25 @@ Working autonomously under /goal. Proxy (d3d11.dll + dxgi.dll) is DEPLOYED durin
 - Cosmetic: 1-pixel UI lines come out thinner at 2x. UI text stays 1080p resolution, as intended.
 - Still to verify in M4: the glow MSAA downsample (copy.hlsl Load(uv*src_size)), the FXAA texel size,
   soft particles, water, Conquest unit cards and the tech tree. M5: the cursor is half size.
+
+### 2026-10-02 M4 (part 1): mission passes
+- Trace diff, native 1080p vs 2x, by capture-analyst: all 3086 matched events are exactly native x2
+  (targets, viewports, SRVs, dispatch counts 60x34 -> 120x68, UAVs). HBAO+ is consistent at real
+  size and its blend covers the full frame. Only shadow-caster draw counts differ, by 62, which is
+  per-frame culling and unrelated to scaling. Scripts are in scratch/cmp.
+- SSAO (HBAO+): fixed in M3 by exempting its calls. AO looks right in the mission captures.
+- DOF: fixed in M3 (real-size target tagging).
+- Glow: the downsample (copy.hlsl MULTISAMPLED, ps 529f0833) does Load(uv * src_size) with src_size =
+  logical 1920x1080 from the per-scene CB (dumprt ... cb showed c1 = 1920,1080,1/1920,1/1080). Fix:
+  cbpatch.cpp reflects every pixel shader (D3DReflect) and patches constants by name at draw time on a
+  copy of the CB, using a lazily shadowed per-scene CB:
+  - src_size and textureDim *2 when t0 is scaled;
+  - one_pixel /2 when t0 is scaled;
+  - fxaaNormPixelWidthHeight /2 and sunMoonPosRes.zw *2 when the target is scaled.
+  45 shaders are registered. "fix nocbpatch on" disables it.
+  Evidence: patched c1 = 3840,2160,1/3840,1/2160; m4-glowdown-nofix-vs-fix.png shows the fire's glow
+  appearing in the downsample only with the patch.
+- Soft particles: correct with no change (the shader divides SV_Position by the scaled depth texture's
+  GetDimensions). m4-smoke-crop.png, Operation Bustard Hunt intro: no hard edges.
+- Tools: dumprt ps:<id prefix> [ds] [cb] (match by pixel shader; cb prints the PS constant buffers).
+- Still to check: water/WaveWorks, the sun disc (sky patch), Conquest unit cards and tech tree.

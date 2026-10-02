@@ -5,6 +5,7 @@
 #include "diag.h"
 #include "scale.h"
 #include "hbao.h"
+#include "cbpatch.h"
 #include <algorithm>
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
@@ -14,6 +15,7 @@ namespace goh4k {
 // ---------------------------------------------------------------- 2x state
 
 void WrappedContext::ResetTrackedState() {
+    m_psPatch = -1;
     m_numVp = m_numSc = 0;
     m_targetScale = m_appliedScale = 1;
     m_targetLogicalW = m_targetLogicalH = 0;
@@ -147,6 +149,34 @@ void STDMETHODCALLTYPE WrappedContext::ClearState() {
     ResetTrackedState();
 }
 
+// ---------------------------------------------------------------- constant-buffer patches
+
+void STDMETHODCALLTYPE WrappedContext::PSSetShader(ID3D11PixelShader* pPixelShader,
+                                                  ID3D11ClassInstance* const* ppClassInstances, UINT NumClassInstances) {
+    m_real->PSSetShader(pPixelShader, ppClassInstances, NumClassInstances);
+    if (Scaling()) m_psPatch = ShaderPatchIndex(pPixelShader);
+}
+
+HRESULT STDMETHODCALLTYPE WrappedContext::Map(ID3D11Resource* pResource, UINT Subresource, D3D11_MAP MapType,
+                                             UINT MapFlags, D3D11_MAPPED_SUBRESOURCE* pMappedResource) {
+    pResource = UnwrapResource(pResource);
+    HRESULT hr = m_real->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
+    if (SUCCEEDED(hr) && pMappedResource && MapType != D3D11_MAP_READ && IsTrackedCb(pResource)) {
+        m_mappedCb = pResource;
+        m_mappedCbData = pMappedResource->pData;
+    }
+    return hr;
+}
+
+void STDMETHODCALLTYPE WrappedContext::Unmap(ID3D11Resource* pResource, UINT Subresource) {
+    pResource = UnwrapResource(pResource);
+    if (m_mappedCb && pResource == m_mappedCb) {
+        TrackCbMapped(pResource, m_mappedCbData);
+        m_mappedCb = nullptr;
+    }
+    m_real->Unmap(pResource, Subresource);
+}
+
 static std::string Pair(ID3D11Resource* dst, ID3D11Resource* src) { return "dst " + ResTag(dst) + " src " + ResTag(src); }
 
 // Arguments are only formatted while a trace is active.
@@ -160,12 +190,14 @@ static std::string BoxStr(const D3D11_BOX* b) {
 }
 
 void STDMETHODCALLTYPE WrappedContext::DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexed(%u,%u,%d)", IndexCount, StartIndexLocation, BaseVertexLocation);
     m_real->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::Draw(UINT VertexCount, UINT StartVertexLocation) {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "Draw(%u,%u)", VertexCount, StartVertexLocation);
     m_real->Draw(VertexCount, StartVertexLocation);
     TRACE_AFTER();
@@ -174,6 +206,7 @@ void STDMETHODCALLTYPE WrappedContext::Draw(UINT VertexCount, UINT StartVertexLo
 void STDMETHODCALLTYPE WrappedContext::DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount,
                                                            UINT StartIndexLocation, INT BaseVertexLocation,
                                                            UINT StartInstanceLocation) {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexedInstanced(%u,%u)", IndexCountPerInstance, InstanceCount);
     m_real->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
                                  StartInstanceLocation);
@@ -182,12 +215,14 @@ void STDMETHODCALLTYPE WrappedContext::DrawIndexedInstanced(UINT IndexCountPerIn
 
 void STDMETHODCALLTYPE WrappedContext::DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount,
                                                     UINT StartVertexLocation, UINT StartInstanceLocation) {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawInstanced(%u,%u)", VertexCountPerInstance, InstanceCount);
     m_real->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::DrawAuto() {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawAuto()");
     m_real->DrawAuto();
     TRACE_AFTER();
@@ -195,12 +230,14 @@ void STDMETHODCALLTYPE WrappedContext::DrawAuto() {
 
 void STDMETHODCALLTYPE WrappedContext::DrawIndexedInstancedIndirect(ID3D11Buffer* pBufferForArgs,
                                                                    UINT AlignedByteOffsetForArgs) {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexedInstancedIndirect");
     m_real->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::DrawInstancedIndirect(ID3D11Buffer* pBufferForArgs, UINT AlignedByteOffsetForArgs) {
+    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawInstancedIndirect");
     m_real->DrawInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
     TRACE_AFTER();
@@ -283,6 +320,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstRes
                                                         const D3D11_BOX* pDstBox, const void* pSrcData,
                                                         UINT SrcRowPitch, UINT SrcDepthPitch) {
     pDstResource = UnwrapResource(pDstResource);
+    TrackCbUpdate(pDstResource, pDstBox, pSrcData);
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     if (Scaling() && ScaleOf(pDstResource) > 1) NoteOnce("update-scaled-resource", "dst " + ResTag(pDstResource));
@@ -294,6 +332,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource1(ID3D11Resource* pDstRe
                                                          const D3D11_BOX* pDstBox, const void* pSrcData,
                                                          UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags) {
     pDstResource = UnwrapResource(pDstResource);
+    TrackCbUpdate(pDstResource, pDstBox, pSrcData);
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource1 dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     m_real->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);

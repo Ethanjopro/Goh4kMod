@@ -80,6 +80,12 @@ public:
     void STDMETHODCALLTYPE RSGetViewports(UINT* pNumViewports, D3D11_VIEWPORT* pViewports) override;
     void STDMETHODCALLTYPE RSGetScissorRects(UINT* pNumRects, D3D11_RECT* pRects) override;
     void STDMETHODCALLTYPE ClearState() override;
+    // Constant-buffer patches (cbpatch.cpp): which pixel shader is bound, and CB contents written by the game.
+    void STDMETHODCALLTYPE PSSetShader(ID3D11PixelShader* pPixelShader, ID3D11ClassInstance* const* ppClassInstances,
+                                       UINT NumClassInstances) override;
+    HRESULT STDMETHODCALLTYPE Map(ID3D11Resource* pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+                                  D3D11_MAPPED_SUBRESOURCE* pMappedResource) override;
+    void STDMETHODCALLTYPE Unmap(ID3D11Resource* pResource, UINT Subresource) override;
 
     int Level() const { return m_level; }
     bool IsImmediate() const { return m_immediate; }
@@ -110,6 +116,9 @@ private:
     UINT m_targetScale = 1;   // scale of the bound render/depth targets
     UINT m_targetLogicalW = 0, m_targetLogicalH = 0;
     UINT m_appliedScale = 1;  // scale the real viewports/scissors were last set with
+    int m_psPatch = -1;       // cbpatch index of the bound pixel shader
+    ID3D11Resource* m_mappedCb = nullptr;  // a tracked constant buffer currently mapped by the game
+    const void* m_mappedCbData = nullptr;
 };
 
 class WrappedDevice final : public Fwd_ID3D11Device5 {

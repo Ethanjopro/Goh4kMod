@@ -2,6 +2,7 @@
 // creation (recorded for stats and traces). M3 adds the 2x rules here.
 #include "wrappers.h"
 #include "diag.h"
+#include "cbpatch.h"
 #include "hbao.h"
 #include "scale.h"
 #include <atomic>
@@ -289,7 +290,10 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDepthStencilView(ID3D11Resource* 
     HRESULT STDMETHODCALLTYPE WrappedDevice::Method(const void* code, SIZE_T len, ID3D11ClassLinkage* linkage,      \
                                                     Type** pp) {                                                    \
         HRESULT hr = m_real->Method(code, len, linkage, pp);                                                        \
-        if (SUCCEEDED(hr) && pp && *pp) RegisterShader(*pp, code, len, kind);                                       \
+        if (SUCCEEDED(hr) && pp && *pp) {                                                                           \
+            RegisterShader(*pp, code, len, kind);                                                                   \
+            if constexpr (kind == 'p') RegisterShaderPatches(*pp, code, len);                                       \
+        }                                                                                                           \
         return hr;                                                                                                  \
     }
 SHADER_CREATE(CreateVertexShader, ID3D11VertexShader, 'v')
