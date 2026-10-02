@@ -29,6 +29,22 @@ WineHooks HD mode has shown the trick works in this game.
 - Anti-cheat: Digitalmindsoft's own. The exe has an eCheatDetectionTask and enumerates processes and
   modules by name (K32EnumProcessModulesEx, QueryFullProcessImageNameW). It is active in single-player.
   BugSplat (BsSndRpt64.exe) handles crash reports.
+- Phase 1 additions:
+  - The exe's load config has Dependent Load Flag 0, and neither d3d11 nor dxgi is a KnownDLL, so a
+    d3d11.dll in binaries\x64 gets loaded.
+  - HBAO+ and WaveWorks import only KERNEL32. System d3d11.dll has 51 exports to forward (list in
+    scratch/phase1/).
+  - options.set also has `{hdr}` (an HDR swapchain, so captures must handle 10-bit/FP16), vsync,
+    softIntersection, dof and lens_refraction. There is no UI-scale option; `gui.scale_index` is a
+    computed UI-script variable stored next to window.size.x/y.
+  - resource/shader.pak is a zip:
+    - ~5.7k precompiled shaders (shader/cache/dx11.0/<md5>.pso/.vso: a defines header plus DXBC with
+      RDEF reflection);
+    - ~34 HLSL post-process sources the game compiles itself (postprocess/ssao/*, dof, hdr…);
+    - soft_intersection.inc.
+  - soft_intersection.inc and SSAO.hlsl turn SV_Position into UV by dividing by
+    `depthTexture.GetDimensions()`, not by a constant. Size-matched 2x scaling should therefore stay
+    consistent for them, as long as the depth texture they read is scaled too.
 - Reference lessons:
   - Steam thread: fullscreen "just works", while borderless renders at desktop size. SSAO shows a dark
     overlay. Soft particles produce artifacts. Conquest unit cards and the tech tree glitch. With the
