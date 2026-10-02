@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "deny": [
+      "Bash(winget *)", "Bash(choco *)", "Bash(scoop *)", "Bash(msiexec *)", "Bash(setx *)",
+      "Bash(reg add *)", "Bash(reg delete *)",
+      "PowerShell(winget *)", "PowerShell(choco *)", "PowerShell(scoop *)", "PowerShell(msiexec *)",
+      "PowerShell(setx *)", "PowerShell(reg add *)", "PowerShell(reg delete *)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(gh pr create *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/briefing.sh\"" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
+        ]
+      }
+    ]
+  }
+}

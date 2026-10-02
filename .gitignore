@@ -1,0 +1,10 @@
+build/
+tools/
+captures/
+scratch/
+*.rdc
+.claude/game-bin.txt
+.claude/settings.local.json
+*.dmp
+*.png
+*.log
