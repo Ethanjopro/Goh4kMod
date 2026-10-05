@@ -72,23 +72,6 @@ void SetUiBuffer(UINT w, UINT h) {
     if (a.bw != b.bw || a.bh != b.bh) Log("ui: swapchain buffers %ux%u", w, h);
 }
 
-static const GUID kUiCopyGuid = {0x5a1c7e42, 0x9b3d, 0x4f60, {0x8e, 0x21, 0x3c, 0x4d, 0x7a, 0x90, 0x16, 0xb5}};
-
-void MarkUiScreenCopy(ID3D11Resource* r) {
-    if (!r) return;
-    uint64_t frame = (uint64_t)g_totalFrames, seen = 0;
-    UINT size = sizeof(seen);
-    if (SUCCEEDED(r->GetPrivateData(kUiCopyGuid, &size, &seen)) && size == sizeof(seen) && seen == frame) return;
-    r->SetPrivateData(kUiCopyGuid, sizeof(frame), &frame);
-}
-
-bool IsUiScreenCopy(ID3D11Resource* r) {
-    uint64_t seen = 0;
-    UINT size = sizeof(seen);
-    if (!r || FAILED(r->GetPrivateData(kUiCopyGuid, &size, &seen)) || size != sizeof(seen)) return false;
-    return (uint64_t)g_totalFrames - seen <= 2;
-}
-
 void NoteOnce(const char* kind, const std::string& detail) {
     static std::mutex mu;
     static std::set<std::string> seen;

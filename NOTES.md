@@ -30,12 +30,15 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
       clipped.
    2. Tone-map and glow passes set the logical-screen viewport on screen-sized targets: applied as the real
       screen. Otherwise the 3D fills only the top-left part. Stock native 4K never does this.
-   3. The blurred backdrop behind prompts is a screen-sized texture the UI draws as an image, with
-      coordinates of logical / texture size. A UI draw (recognised by its vertex shader, which is learnt
-      from rule 1's draws) that samples one marks it for 2 frames; while marked, the game's full-screen
-      pass into it fills only the logical part. Otherwise only its top-left quarter shows, magnified. The
-      mark expires, so a texture the game later reuses for something else is normal again. The UI vertex
-      shader is matched by bytecode id: the game creates it more than once.
+   3. The blurred backdrop behind prompts is a screen-sized texture the UI draws as an image. Each popup's
+      backdrop element uses texture coordinates 0..1 in its first frame and logical / texture size (0..0.5
+      at 4K) afterwards; at native 1080p both mean the whole image, with the mod the later ones show only
+      its top-left quarter, magnified. Fix: those later draws (recognised by the UI's vertex shader, learnt
+      from rule 1's draws and matched by bytecode id, and by a per-image count of draws per frame) get a
+      stand-in texture k times the image's size with the image copied 1:1 into its top-left. The image
+      itself is never changed: an earlier fix that shrank it into its top-left showed it small in the
+      top-left corner on a second popup's first frame. The dev build reads back each such draw's
+      coordinates and logs `ui check ... DISAGREES` when the choice was wrong.
    Partial scissors aren't converted: 114 traces (menus, missions, Conquest, tech tree, scrolled Options)
    never enabled scissoring.
 3. **Coordinate math is rational** (ratio.h, checked exhaustively by proxytest): Down = floor, Up = ceil,
@@ -115,9 +118,9 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 1. **Does it still load?** Read `goh4k.log` next to the DLLs (release build) or `scratch/logs/` (dev
    build):
    - "input hooks: 10 of 10", "ui: swapchain buffers 3840x2160", "ui scale 2/1 (WM_SIZE, real client
-     3840x2160)", "ui: vertex shader ... recognised as the UI's" and the three notes `ui-label-viewport`,
-     `ui-screen-viewport` (first mission or prompt) and `ui-copy-viewport` (first prompt) mean the core
-     works.
+     3840x2160)", "ui: vertex shader ... recognised as the UI's", the notes `ui-label-viewport` and
+     `ui-screen-viewport` (first mission or prompt) and "... the UI gets a 7680x4320 copy of it" (first
+     prompt) mean the core works. Dev build: no `ui check ... DISAGREES` lines except one per resolution switch.
    - If no swapchain is wrapped, the game changed how it creates it. Look for
      `IDXGIFactory::CreateSwapChain` / `CreateSwapChainForHwnd` lines, then check `dumpbin /imports` of
      the exe (d3d11/dxgi functions). A move to D3D12 would need a new proxy.
@@ -138,7 +141,8 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
    it: exempt its calls by return address (module range, the way 2.0 first did for HBAO+; see git
    history of context.cpp).
 6. **Driving the game for tests:**
-   - `build\drive\drive.exe` (click, move, drag, mdrag, mrotate, key, wheel, focus, fg, cursor, snap) and
+   - `build\drive\drive.exe` (click, move, drag, mdrag, mrotate, key, wheel, focus, fg, cursor, snap, burst)
+     and
      `imgtool.exe`.
    - Click coordinates are the 1080p UI position x k (x2 at 4K, x4/3 at 1440p), plus the client origin in a
      window. A window smaller than its monitor isn't scaled, so the UI there is at its native size.
@@ -161,5 +165,9 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 - After changing resolution in Options, the cursor keeps its old size until the game creates a new one
   (restart once).
 - A single left-click on the minimap doesn't move the camera, same as the stock game.
+- A small 1382x824 window flashes for a split second when quitting or when the game loses focus: the
+  game's own SetFullscreenState(0) (DXGI restores its startup window size). Same without the mod.
+- During a resolution switch one frame can show a popup backdrop slightly magnified (the game draws it
+  once with the old coordinates while the monitor re-syncs).
 - It conflicts with other mods installed as d3d11.dll or dxgi.dll (ReShade, DXVK).
 - Multiplayer is untested by design. Users must uninstall before going online.

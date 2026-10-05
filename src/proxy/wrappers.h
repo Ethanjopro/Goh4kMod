@@ -102,7 +102,9 @@ private:
     void UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv);
     void UiApplyViewports();
     void UiApplyScissors();
-    void UiBeforeDraw();
+    bool UiBeforeDraw();
+    void UiAfterDraw();
+    void UiCheckImageDraw(UINT indexCount, UINT startIndex, INT baseVertex, bool standIn);
 
     WrappedDevice* m_device;
     bool m_immediate;
@@ -121,6 +123,8 @@ private:
     ID3D11ShaderResourceView* m_ps0 = nullptr;  // bound pixel-shader texture 0 (no reference)
     bool m_ps0Known = false;                    // m_ps0Copy is up to date for it
     ID3D11Resource* m_ps0Copy = nullptr;        // its texture, if screen-sized and a render target
+    ID3D11ShaderResourceView* m_uiSavedPs0 = nullptr;  // the game's slot-0 view while rule 3's stand-in is bound
+    bool m_uiImageDraw = false;  // the current draw is a UI draw of a screen-sized image (stand-in or not)
 };
 
 class WrappedDevice final : public Fwd_ID3D11Device5 {

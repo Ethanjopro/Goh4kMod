@@ -31,9 +31,11 @@ void WrappedContext::ResetTrackedState() {
 //    the top-left part: applied as the real screen. Stock native 4K never sets a 1920x1080 viewport on a
 //    3840x2160 target (captures/20261002-122821-mission-trace.txt).
 // 3. Screen-sized textures the UI draws as images (the blurred backdrop behind prompts) are sampled with
-//    coordinates of logical / texture size, so only their top-left part shows, magnified. A UI draw (see
-//    UiBeforeDraw) that samples one marks it for 2 frames; while marked it is treated like rule 1, so the
-//    game's full-screen pass into it fills exactly that part.
+//    coordinates of logical / texture size, so only their top-left part shows, magnified. Such a UI draw (see
+//    UiBeforeDraw) gets a stand-in texture k times as large with the image copied 1:1 into its top-left, so
+//    those coordinates cover the whole image. The image itself is left alone: the game also draws it full
+//    screen in the frame a second popup opens (a 1.x/early-2.0 fix that shrank the image into its top-left
+//    showed that frame as a small copy of the screen in the top-left corner, captures/v2/burst-exitq/064).
 // "Real screen" is the buffer size, not the window's: in windowed modes the two can differ. Other rects and
 // other targets are left alone; RSGet* return the game's own values. 114 traces of menus, missions,
 // Conquest and the tech tree never enabled scissoring, so partial scissors aren't converted. "fix nouivp on"
@@ -41,10 +43,9 @@ void WrappedContext::ResetTrackedState() {
 // rules never change those; when it restores the game's state, the game's viewport gets the rules like any
 // other (A/B with the 1.x exemption: no difference, captures/v2/hb-heats.png).
 
-enum UiTarget { kUiOther = 0, kUiBelow = 1, kUiScreen = 2, kUiCopy = 3 };
+enum UiTarget { kUiOther = 0, kUiBelow = 1, kUiScreen = 2 };
 
 static const GUID kUiClassGuid = {0x2e7b4c19, 0x6d58, 0x4a3e, {0xa1, 0x07, 0x5b, 0x92, 0xc8, 0x3f, 0x44, 0xd0}};
-static std::atomic<bool> g_anyUiCopy{false};  // rule 3 has marked a texture at least once
 
 struct UiClassCache {
     uint32_t generation;
@@ -58,9 +59,7 @@ static int UiSizeClass(ID3D11View* v, bool render, const UiState& s, ID3D11Resou
     uint32_t gen = UiStateGeneration();
     UiClassCache c = {};
     UINT size = sizeof(c);
-    if (SUCCEEDED(v->GetPrivateData(kUiClassGuid, &size, &c)) && size == sizeof(c) && c.generation == gen &&
-        (c.cls != kUiScreen || !render || !g_anyUiCopy.load(std::memory_order_relaxed)))
-        return c.cls;
+    if (SUCCEEDED(v->GetPrivateData(kUiClassGuid, &size, &c)) && size == sizeof(c) && c.generation == gen) return c.cls;
     v->GetResource(res);
     c = {gen, kUiOther};
     ID3D11Texture2D* t = nullptr;
@@ -79,10 +78,6 @@ static int UiTargetClass(ID3D11View* v, bool render, const UiState& s) {
     if (!v || !s.bw || !s.bh) return kUiOther;
     ID3D11Resource* r = nullptr;
     int c = UiSizeClass(v, render, s, &r);
-    if (c == kUiScreen && render && g_anyUiCopy.load(std::memory_order_relaxed)) {
-        if (!r) v->GetResource(&r);
-        if (IsUiScreenCopy(r)) c = kUiCopy;
-    }
     if (r) r->Release();
     return c;
 }
@@ -113,10 +108,10 @@ static bool UiSwap(int target, UINT* fromW, UINT* fromH, UINT* toW, UINT* toH) {
 
 // Logged once per rule and kind of rect.
 static void NoteRule(int target, bool scissor, UINT fw, UINT fh, UINT tw, UINT th) {
-    static std::atomic<bool> noted[8];
+    static std::atomic<bool> noted[6];
     if (noted[target * 2 + (scissor ? 1 : 0)].exchange(true)) return;
-    static const char* const kNames[8] = {"", "", "ui-label-viewport", "ui-label-scissor", "ui-screen-viewport",
-                                          "ui-screen-scissor", "ui-copy-viewport", "ui-copy-scissor"};
+    static const char* const kNames[6] = {"", "", "ui-label-viewport", "ui-label-scissor", "ui-screen-viewport",
+                                          "ui-screen-scissor"};
     Log("note [%s]: full-screen %s %ux%u applied as %ux%u", kNames[target * 2 + (scissor ? 1 : 0)],
         scissor ? "scissor" : "viewport", fw, fh, tw, th);
 }
@@ -183,17 +178,93 @@ static void LearnUiVs(uint64_t h) {
     if (!full.exchange(true)) Log("ui: more than %d UI vertex shaders; %016llx not learnt", kUiVsSlots, (unsigned long long)h);
 }
 
-// Before each indexed draw: learn the UI's vertex shader (rule 1 draws), or mark a screen-sized texture that a
-// UI draw onto a screen-sized target samples as its image (rule 3). The slot-0 texture is looked at once per
-// bind (PSSetShaderResources), the mark refreshed at most once per frame.
-void WrappedContext::UiBeforeDraw() {
-    if (!m_vs || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen && m_uiTarget != kUiCopy)) return;
+// Rule 3's stand-in for a screen-sized image: k times its size, the image copied 1:1 into its top-left. Kept on
+// the image as private data (so it goes away with it) and recreated when k changes. The rest of it is never
+// sampled. Null if the image can't have one (MSAA, arrays, mips, too large).
+static const GUID kUiStandInTexGuid = {0x8c2d5f61, 0x1a7e, 0x4b93, {0xb4, 0x0c, 0x6e, 0x15, 0x92, 0xa8, 0x3d, 0x77}};
+static const GUID kUiStandInSrvGuid = {0x8c2d5f62, 0x1a7e, 0x4b93, {0xb4, 0x0c, 0x6e, 0x15, 0x92, 0xa8, 0x3d, 0x77}};
+
+static ID3D11ShaderResourceView* UiStandIn(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* gameSrv,
+                                           ID3D11Texture2D* img, Ratio k) {
+    D3D11_TEXTURE2D_DESC d;
+    img->GetDesc(&d);
+    UINT w = (UINT)RatioUp((long)d.Width, k), h = (UINT)RatioUp((long)d.Height, k);
+    if (d.SampleDesc.Count != 1 || d.ArraySize != 1 || d.MipLevels != 1 || w > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        h > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+        return nullptr;
+    ID3D11Texture2D* tex = nullptr;
+    ID3D11ShaderResourceView* srv = nullptr;
+    UINT size = sizeof(tex);
+    if (SUCCEEDED(img->GetPrivateData(kUiStandInTexGuid, &size, &tex)) && tex) {
+        D3D11_TEXTURE2D_DESC td;
+        tex->GetDesc(&td);
+        size = sizeof(srv);
+        if (td.Width == w && td.Height == h) img->GetPrivateData(kUiStandInSrvGuid, &size, &srv);
+    }
+    if (!srv) {
+        if (tex) tex->Release(), tex = nullptr;
+        D3D11_SHADER_RESOURCE_VIEW_DESC vd;
+        gameSrv->GetDesc(&vd);
+        if (vd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) return nullptr;
+        D3D11_TEXTURE2D_DESC nd = d;
+        nd.Width = w, nd.Height = h, nd.MipLevels = 1;
+        nd.Usage = D3D11_USAGE_DEFAULT, nd.BindFlags = D3D11_BIND_SHADER_RESOURCE, nd.CPUAccessFlags = 0, nd.MiscFlags = 0;
+        if (FAILED(dev->CreateTexture2D(&nd, nullptr, &tex))) return nullptr;
+        vd.Texture2D.MostDetailedMip = 0, vd.Texture2D.MipLevels = 1;
+        if (FAILED(dev->CreateShaderResourceView(tex, &vd, &srv))) return tex->Release(), nullptr;
+        img->SetPrivateDataInterface(kUiStandInTexGuid, tex);
+        img->SetPrivateDataInterface(kUiStandInSrvGuid, srv);
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true))
+            Log("ui: %ux%u fmt=%d texture drawn by the UI as an image; the UI gets a %ux%u copy of it", d.Width, d.Height,
+                (int)d.Format, w, h);
+    }
+    ctx->CopySubresourceRegion(tex, 0, 0, 0, 0, img, 0, nullptr);
+    tex->Release();  // kept alive by img's private data
+    return srv;
+}
+
+// The UI draws a backdrop with coordinates 0..1 in the first frame its element exists, and with logical /
+// texture size (0..0.5 at 4K) from then on (vertex data read back in the dev build, LOG.md). In stock native
+// both mean the whole image, so only the later ones need the stand-in. Per image, the draws of each frame are
+// counted: a draw beyond last frame's count is a new element and keeps the game's own image. Draws that resume
+// after a display change (the game skips UI frames during a resolution switch) continue the old count.
+static const GUID kUiDrawCountGuid = {0x8c2d5f63, 0x1a7e, 0x4b93, {0xb4, 0x0c, 0x6e, 0x15, 0x92, 0xa8, 0x3d, 0x77}};
+
+struct UiDrawCount {
+    LONG64 frame;
+    UINT count, prevCount;
+    uint32_t generation;  // UiStateGeneration at the last draw
+};
+
+static bool UiEstablishedDraw(ID3D11Resource* img) {
+    UiDrawCount c = {};
+    UINT size = sizeof(c);
+    if (FAILED(img->GetPrivateData(kUiDrawCountGuid, &size, &c)) || size != sizeof(c)) c = {};
+    LONG64 f = g_totalFrames;
+    uint32_t gen = UiStateGeneration();
+    if (c.frame != f) {
+        bool continues = c.frame == f - 1 || (c.frame && c.generation != gen);
+        c.prevCount = continues ? c.count : 0, c.frame = f, c.count = 0;
+    }
+    c.generation = gen;
+    bool established = c.count < c.prevCount;
+    ++c.count;
+    img->SetPrivateData(kUiDrawCountGuid, sizeof(c), &c);
+    return established;
+}
+
+// Before each indexed draw: learn the UI's vertex shader (rule 1 draws), or, for an established UI draw onto a
+// screen-sized target that samples a screen-sized image, bind rule 3's stand-in at slot 0. True if UiAfterDraw
+// must put the game's texture back. The slot-0 texture is looked at once per bind (PSSetShaderResources).
+bool WrappedContext::UiBeforeDraw() {
+    if (!m_vs || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen)) return false;
     if (!m_vsHashKnown) m_vsHash = ShaderHash(m_vs), m_vsHashKnown = true;
     if (m_uiTarget == kUiBelow) {
         if (m_uiVpSwapped) LearnUiVs(m_vsHash);
-        return;
+        return false;
     }
-    if (m_uiTarget != kUiScreen || !m_ps0 || !IsUiVs(m_vsHash)) return;
+    if (!m_ps0 || !IsUiVs(m_vsHash)) return false;
     if (!m_ps0Known) {
         m_ps0Known = true;
         m_ps0Copy = nullptr;
@@ -209,14 +280,25 @@ void WrappedContext::UiBeforeDraw() {
         }
         if (r) r->Release();  // the bound view keeps it alive while m_ps0Copy is used
     }
-    if (!m_ps0Copy) return;
-    if (!g_anyUiCopy.exchange(true)) {
-        D3D11_TEXTURE2D_DESC d;
-        static_cast<ID3D11Texture2D*>(m_ps0Copy)->GetDesc(&d);
-        Log("ui: %ux%u fmt=%d texture drawn by the UI as an image; renders into it fill the logical part while it is",
-            d.Width, d.Height, (int)d.Format);
-    }
-    MarkUiScreenCopy(m_ps0Copy);
+    if (!m_ps0Copy || FixOn("nouivp")) return false;
+    UiState s = UiSnapshot();
+    if (!s.active) return false;
+    m_uiImageDraw = true;
+    if (!UiEstablishedDraw(m_ps0Copy)) return false;
+    ID3D11ShaderResourceView* standIn =
+        UiStandIn(m_device->Real(), m_real, m_ps0, static_cast<ID3D11Texture2D*>(m_ps0Copy), s.k);
+    if (!standIn) return false;
+    m_ps0->AddRef();  // the context drops its reference when the stand-in is bound; keep the game's view alive
+    m_uiSavedPs0 = m_ps0;
+    m_real->PSSetShaderResources(0, 1, &standIn);
+    standIn->Release();  // bound now; also kept by the image's private data
+    return true;
+}
+
+void WrappedContext::UiAfterDraw() {
+    m_real->PSSetShaderResources(0, 1, &m_uiSavedPs0);
+    m_uiSavedPs0->Release();
+    m_uiSavedPs0 = nullptr;
 }
 
 void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargets(UINT NumViews, ID3D11RenderTargetView* const* ppRenderTargetViews,
@@ -303,10 +385,63 @@ static std::string BoxStr(const D3D11_BOX* b) {
     return b ? Fmt("box=%u,%u-%u,%u", b->left, b->top, b->right, b->bottom) : std::string("box=all");
 }
 
+// Dev-build self-check for rule 3: reads back the quad's texture coordinates (a GPU stall, diagnostics only)
+// and logs every draw where the stand-in choice and the coordinates disagree, plus the first few that agree.
+void WrappedContext::UiCheckImageDraw(UINT indexCount, UINT startIndex, INT baseVertex, bool standIn) {
+    static std::atomic<int> agreed{0}, disagreed{0};
+    if (!m_immediate || (agreed >= 12 && disagreed >= 100)) return;
+    ID3D11Buffer* vb = nullptr;
+    UINT stride = 0, off = 0;
+    m_real->IAGetVertexBuffers(0, 1, &vb, &stride, &off);
+    ID3D11Buffer* ib = nullptr;
+    DXGI_FORMAT ifmt = DXGI_FORMAT_UNKNOWN;
+    UINT ioff = 0;
+    m_real->IAGetIndexBuffer(&ib, &ifmt, &ioff);
+    auto readBack = [&](ID3D11Buffer* b, std::vector<uint8_t>* out) {
+        D3D11_BUFFER_DESC bd;
+        b->GetDesc(&bd);
+        D3D11_BUFFER_DESC sd = {bd.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0};
+        ID3D11Buffer* st = nullptr;
+        if (FAILED(m_device->Real()->CreateBuffer(&sd, nullptr, &st))) return false;
+        m_real->CopyResource(st, b);
+        D3D11_MAPPED_SUBRESOURCE m = {};
+        bool ok = SUCCEEDED(m_real->Map(st, 0, D3D11_MAP_READ, 0, &m));
+        if (ok) out->assign((const uint8_t*)m.pData, (const uint8_t*)m.pData + bd.ByteWidth), m_real->Unmap(st, 0);
+        st->Release();
+        return ok;
+    };
+    std::vector<uint8_t> ibd, vbd;
+    float uvMax = -1;
+    if (vb && ib && stride >= 36 && readBack(ib, &ibd) && readBack(vb, &vbd)) {
+        UINT isz = ifmt == DXGI_FORMAT_R32_UINT ? 4 : 2;
+        for (UINT i = 0; i < indexCount && i < 6; ++i) {
+            size_t ip = ioff + (size_t)(startIndex + i) * isz;
+            if (ip + isz > ibd.size()) break;
+            UINT idx = isz == 4 ? *(const uint32_t*)&ibd[ip] : *(const uint16_t*)&ibd[ip];
+            size_t vp = off + (size_t)((INT)idx + baseVertex) * stride;
+            if (vp + stride > vbd.size()) break;
+            const float* fl = (const float*)&vbd[vp];
+            uvMax = std::max(uvMax, std::max(fl[7], fl[8]));  // texcoord0 at byte 28 (stride 36)
+        }
+    }
+    if (vb) vb->Release();
+    if (ib) ib->Release();
+    if (uvMax < 0) return;
+    bool wantStandIn = uvMax < 0.99f;
+    if (wantStandIn == standIn) {
+        if (agreed++ < 12) Log("ui check frame %lld: image draw uv max %g, stand-in %d: agrees", (long long)g_totalFrames, uvMax, standIn);
+    } else if (disagreed++ < 100) {
+        Log("ui check frame %lld: image draw uv max %g, stand-in %d: DISAGREES", (long long)g_totalFrames, uvMax, standIn);
+    }
+}
+
 void STDMETHODCALLTYPE WrappedContext::DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) {
-    if (UiScaleConfigured()) UiBeforeDraw();
+    m_uiImageDraw = false;
+    bool standIn = UiScaleConfigured() && UiBeforeDraw();
+    if (m_uiImageDraw && g_cfg.diagnostics) UiCheckImageDraw(IndexCount, StartIndexLocation, BaseVertexLocation, standIn);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexed(%u,%u,%d)", IndexCount, StartIndexLocation, BaseVertexLocation);
     m_real->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
+    if (standIn) UiAfterDraw();
     TRACE_AFTER();
 }
 

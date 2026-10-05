@@ -56,6 +56,36 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-
 - 2026-10-05 13:36 deploy: d3d11.dll sha256 DF6AE6A56987 (replaced our previous build)
 - 2026-10-05 13:36 deploy: dxgi.dll sha256 F6DEB26B7391 (replaced our previous build)
 - 2026-10-05 13:36 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
+- 2026-10-05 14:10 deploy: d3d11.dll sha256 927ED57FDA24 (replaced our previous build)
+- 2026-10-05 14:10 deploy: dxgi.dll sha256 04BB14F603EE (replaced our previous build)
+- 2026-10-05 14:14 uninstall: removed d3d11.dll
+- 2026-10-05 14:14 uninstall: removed dxgi.dll
+- 2026-10-05 14:14 uninstall: removed goh4k.log
+- 2026-10-05 14:14 uninstall: removed Uninstall Goh4kMod.bat
+- 2026-10-05 14:14 uninstall check: folder matches the baseline (26 files)
+- 2026-10-05 14:15 deploy: d3d11.dll sha256 927ED57FDA24 (new file)
+- 2026-10-05 14:15 deploy: dxgi.dll sha256 04BB14F603EE (new file)
+- 2026-10-05 14:17 uninstall: removed d3d11.dll
+- 2026-10-05 14:17 uninstall: removed dxgi.dll
+- 2026-10-05 14:17 uninstall check: folder matches the baseline (26 files)
+- 2026-10-05 14:18 deploy: d3d11.dll sha256 DF6AE6A56987 (new file)
+- 2026-10-05 14:18 deploy: dxgi.dll sha256 F6DEB26B7391 (new file)
+- 2026-10-05 14:18 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (new file)
+- 2026-10-05 15:06 deploy: d3d11.dll sha256 927ED57FDA24 (replaced our previous build)
+- 2026-10-05 15:06 deploy: dxgi.dll sha256 04BB14F603EE (replaced our previous build)
+- 2026-10-05 15:24 deploy: d3d11.dll sha256 2C105BA2FCC4 (replaced our previous build)
+- 2026-10-05 15:24 deploy: dxgi.dll sha256 77DC4A0609E3 (replaced our previous build)
+- 2026-10-05 15:27 deploy: d3d11.dll sha256 6962665166CD (replaced our previous build)
+- 2026-10-05 15:27 deploy: dxgi.dll sha256 77DC4A0609E3 (replaced our previous build)
+- 2026-10-05 15:31 deploy: d3d11.dll sha256 506C6936A7A8 (replaced our previous build)
+- 2026-10-05 15:31 deploy: dxgi.dll sha256 77DC4A0609E3 (replaced our previous build)
+- 2026-10-05 15:36 deploy: d3d11.dll sha256 BE8D10E8D3C4 (replaced our previous build)
+- 2026-10-05 15:36 deploy: dxgi.dll sha256 725C3438A596 (replaced our previous build)
+- 2026-10-05 15:42 deploy: d3d11.dll sha256 0FAD424F5935 (replaced our previous build)
+- 2026-10-05 15:42 deploy: dxgi.dll sha256 697E0596C430 (replaced our previous build)
+- 2026-10-05 15:44 deploy: d3d11.dll sha256 BC6EB6E7A5D1 (replaced our previous build)
+- 2026-10-05 15:44 deploy: dxgi.dll sha256 5C1911C88572 (replaced our previous build)
+- 2026-10-05 15:44 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -458,3 +488,28 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-
   exclusive 1440p. Release build: 150 FPS (stock 152 at the same moment), prompt and HUD correct.
 - drive.exe gained `mdrag` and `mrotate` (middle-button camera rotation).
 - Profile at the end: identical to the session-start backup except Ethan's own `mode "3840x2160"`.
+
+### 2026-10-05 Popup glitch: the screen copy shown small in the top-left for one frame (Ethan)
+- Ethan: "the actual prompt window appearing in the top left corner for a split second" when opening a
+  menu popup (going back to the main menu from a mission). First mistaken for the stock window flash on
+  quit/focus loss (DXGI restores the 1382x824 startup window when fullscreen is left; stock does it too,
+  measured with a 5 ms window poller; noted in NOTES known limits).
+- New tool: `drive burst <dir> <ms>` saves every presented frame (desktop duplication, reopened after mode
+  changes). Caught: captures/v2/burst-exitq/064 (Exit confirm over the Game Menu): the whole screen shrunk
+  into the top-left quarter for one frame.
+- Cause: rule 3 shrank the backdrop image into its top-left (the UI samples it with logical / texture
+  size). Vertex data read back in the dev build: **each popup's backdrop is drawn with texture coordinates
+  0..1 in its element's first frame and 0..0.5 afterwards** (0..0.75 at 1440p). The first frame of a second
+  popup therefore showed the shrunk image. (The 2-frame mark from the review fixes made it worse: every
+  popup's first frame.)
+- Fix: the image is no longer changed. An established UI draw of a screen-sized image gets a stand-in
+  texture k times its size with the image copied 1:1 into its top-left (7680x4320 at 4K, 3414x1920 at
+  1440p, one GPU copy per draw, kept on the image as private data). A draw beyond last frame's count of
+  draws of that image is a new element and keeps the game's image; draws resuming after a display change
+  continue the count.
+- Dev-build self-check reads back each image draw's coordinates and logs disagreements: 0 in menus,
+  missions, Options, Esc menu, Exit confirm (incl. over the Game Menu), 1440p. One per resolution switch
+  remains: the game draws one frame with the old coordinates on the recreated image while the monitor
+  re-syncs (no texture choice is right for that frame).
+- Bursts after the fix (dev and release): main-menu Exit and Options, Esc menu, Exit confirm x3, Options
+  over the Game Menu, YES back to the menu, 1440p Exit prompt: no intermediate frame, no top-left copy.

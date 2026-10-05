@@ -3,6 +3,7 @@
 //   drive focus 1234 wait 300 click 1920 1080 wait 1500 snap captures\nav\menu.png
 // Coordinates are physical screen pixels (the process is per-monitor DPI aware).
 //   snap <file.png> [divisor]   desktop duplication of the primary monitor, box-downscaled (default /4)
+//   burst <dir> <ms> [divisor]  every presented frame for ms milliseconds (nearest, default /8) -> dir\NNN.png
 //   move x y | click x y [right] | dclick x y | drag x1 y1 x2 y2 | wheel n | key name[+name...] | wait ms
 //   mdrag x1 y1 x2 y2           drag with the middle button; mrotate dx dy steps: relative moves, middle held
 //   focus pid                   bring that process's main window to the foreground
@@ -88,7 +89,7 @@ static WORD VkFromName(const std::string& n) {
         {"esc", VK_ESCAPE}, {"enter", VK_RETURN}, {"space", VK_SPACE}, {"tab", VK_TAB}, {"backspace", VK_BACK},
         {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT}, {"home", VK_HOME}, {"end", VK_END},
         {"pgup", VK_PRIOR}, {"pgdn", VK_NEXT}, {"insert", VK_INSERT}, {"delete", VK_DELETE}, {"shift", VK_SHIFT},
-        {"ctrl", VK_CONTROL}, {"alt", VK_MENU}, {"pause", VK_PAUSE}};
+        {"ctrl", VK_CONTROL}, {"alt", VK_MENU}, {"pause", VK_PAUSE}, {"win", VK_LWIN}};
     for (auto& e : names)
         if (_stricmp(n.c_str(), e.name) == 0) return e.vk;
     return 0;
@@ -248,10 +249,14 @@ static bool SavePng(const std::wstring& path, int w, int h, const std::vector<ui
     return ok;
 }
 
-static bool Snap(const std::wstring& path, int div) {
-    if (div < 1) div = 1;
+// Desktop duplication of the primary output, on a new device. Null (with a message unless quiet) if it can't
+// be set up.
+static bool g_quietDup = false;
+#define printf(...) (g_quietDup ? 0 : printf(__VA_ARGS__))
+static IDXGIOutputDuplication* OpenDuplication(ID3D11Device** pdev, ID3D11DeviceContext** pctx) {
+    *pdev = nullptr, *pctx = nullptr;
     IDXGIFactory1* factory = nullptr;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return printf("snap: no DXGI factory\n"), false;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return printf("duplication: no DXGI factory\n"), nullptr;
     IDXGIAdapter1* adapter = nullptr;
     IDXGIOutput* output = nullptr;
     for (UINT a = 0; !output && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
@@ -267,7 +272,7 @@ static bool Snap(const std::wstring& path, int div) {
         if (!output) SafeRelease(adapter);
     }
     SafeRelease(factory);
-    if (!output) return printf("snap: primary output not found\n"), false;
+    if (!output) return printf("duplication: primary output not found\n"), nullptr;
 
     ID3D11Device* dev = nullptr;
     ID3D11DeviceContext* ctx = nullptr;
@@ -292,12 +297,23 @@ static bool Snap(const std::wstring& path, int div) {
     }
     SafeRelease(output);
     if (!dup) {
-        printf("snap: desktop duplication failed (0x%08lx)\n", hr);
+        printf("duplication: failed (0x%08lx)\n", hr);
         SafeRelease(ctx);
         SafeRelease(dev);
-        return false;
+        return nullptr;
     }
+    *pdev = dev, *pctx = ctx;
+    return dup;
+}
+#undef printf
 
+static bool Snap(const std::wstring& path, int div) {
+    if (div < 1) div = 1;
+    ID3D11Device* dev = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    IDXGIOutputDuplication* dup = OpenDuplication(&dev, &ctx);
+    if (!dup) return false;
+    HRESULT hr = S_OK;
     ID3D11Texture2D* tex = nullptr;
     for (int tries = 0; tries < 20 && !tex; ++tries) {
         DXGI_OUTDUPL_FRAME_INFO fi = {};
@@ -378,6 +394,118 @@ static bool Snap(const std::wstring& path, int div) {
     return ok;
 }
 
+// Every presented frame for `ms` milliseconds, nearest-pixel downscaled by `div` and kept in memory, then saved
+// as <dir>\NNN.png. Prints each frame's time and mean luma, so a one-frame glitch stands out.
+static bool Burst(const std::wstring& dir, int ms, int div) {
+    if (div < 1) div = 1;
+    static uint8_t half2srgb[65536];
+    static bool lut = false;
+    if (!lut) {
+        for (int i = 0; i < 65536; ++i) half2srgb[i] = LinearToSrgb8(HalfToFloat((uint16_t)i));
+        lut = true;
+    }
+    ID3D11Device* dev = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    IDXGIOutputDuplication* dup = nullptr;  // opened (and reopened after mode changes) in the loop below
+    int openFailures = 0;
+    struct Frame {
+        double t;
+        int w, h;
+        std::vector<uint8_t> bgr;
+        double luma;
+    };
+    std::vector<Frame> frames;
+    ID3D11Texture2D* staging = nullptr;
+    D3D11_TEXTURE2D_DESC td = {};
+    int w = 0, h = 0;
+    ULONGLONG start = GetTickCount64();
+    LARGE_INTEGER freq, t0;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+    while (GetTickCount64() - start < (ULONGLONG)ms) {
+        DXGI_OUTDUPL_FRAME_INFO fi = {};
+        IDXGIResource* res = nullptr;
+        HRESULT hr = dup ? dup->AcquireNextFrame(50, &fi, &res) : DXGI_ERROR_ACCESS_LOST;
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) continue;
+        if (hr == DXGI_ERROR_ACCESS_LOST) {  // a mode change or fullscreen switch: reopen and go on
+            SafeRelease(dup);
+            SafeRelease(staging);
+            SafeRelease(ctx);
+            SafeRelease(dev);
+            td = {};
+            g_quietDup = true;
+            dup = OpenDuplication(&dev, &ctx);
+            g_quietDup = false;
+            if (!dup) ++openFailures, Sleep(10);
+            continue;
+        }
+        if (FAILED(hr)) {
+            printf("burst: AcquireNextFrame 0x%08lx\n", hr);
+            break;
+        }
+        ID3D11Texture2D* tex = nullptr;
+        if (fi.LastPresentTime.QuadPart != 0) res->QueryInterface(IID_PPV_ARGS(&tex));
+        res->Release();
+        if (tex) {
+            D3D11_TEXTURE2D_DESC d;
+            tex->GetDesc(&d);
+            if (!staging || d.Width != td.Width || d.Height != td.Height || d.Format != td.Format) {
+                SafeRelease(staging);
+                td = d;
+                D3D11_TEXTURE2D_DESC sd = d;
+                sd.Usage = D3D11_USAGE_STAGING, sd.BindFlags = 0, sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ, sd.MiscFlags = 0;
+                dev->CreateTexture2D(&sd, nullptr, &staging);
+                w = (int)d.Width / div, h = (int)d.Height / div;
+            }
+            if (staging) ctx->CopyResource(staging, tex);
+            tex->Release();
+        }
+        dup->ReleaseFrame();
+        D3D11_MAPPED_SUBRESOURCE m = {};
+        if (!tex || !staging || FAILED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) continue;
+        Frame f;
+        f.t = double(fi.LastPresentTime.QuadPart - t0.QuadPart) * 1000.0 / double(freq.QuadPart);
+        f.w = w, f.h = h;
+        f.bgr.resize((size_t)w * h * 3);
+        bool fp16 = td.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        double lum = 0;
+        for (int y = 0; y < h; ++y) {
+            const uint8_t* row = (const uint8_t*)m.pData + (size_t)(y * div + div / 2) * m.RowPitch;
+            for (int x = 0; x < w; ++x) {
+                int px = x * div + div / 2;
+                uint8_t* o = &f.bgr[((size_t)y * w + x) * 3];
+                if (fp16) {
+                    const uint16_t* p = (const uint16_t*)row + (size_t)px * 4;
+                    o[0] = half2srgb[p[2]], o[1] = half2srgb[p[1]], o[2] = half2srgb[p[0]];
+                } else {
+                    const uint8_t* p = row + (size_t)px * 4;
+                    o[0] = p[0], o[1] = p[1], o[2] = p[2];
+                }
+                lum += 0.114 * o[0] + 0.587 * o[1] + 0.299 * o[2];
+            }
+        }
+        ctx->Unmap(staging, 0);
+        f.luma = lum / ((double)w * h);
+        frames.push_back(std::move(f));
+    }
+    SafeRelease(staging);
+    SafeRelease(dup);
+    SafeRelease(ctx);
+    SafeRelease(dev);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    bool ok = true;
+    for (size_t i = 0; i < frames.size(); ++i) {
+        wchar_t name[32];
+        swprintf_s(name, L"\\%03zu.png", i);
+        ok = SavePng(dir + name, frames[i].w, frames[i].h, frames[i].bgr) && ok;
+        printf("burst %03zu  t=%8.1f ms  %dx%d  luma %.1f\n", i, frames[i].t, frames[i].w * div, frames[i].h * div,
+               frames[i].luma);
+    }
+    printf("burst %ls: %zu frames in %d ms (%d failed duplication opens during mode changes)\n", dir.c_str(),
+           frames.size(), ms, openFailures);
+    return ok && !frames.empty();
+}
+
 // ------------------------------------------------------------------ main
 
 int wmain(int argc, wchar_t** argv) {
@@ -399,6 +527,12 @@ int wmain(int argc, wchar_t** argv) {
             if (i + 2 < argc && iswdigit(argv[i + 2][0])) div = num(i + 2), i += 1;
             if (!Snap(file, div)) rc = 1;
             i += 2;
+        } else if (cmd == L"burst") {
+            std::wstring folder = arg(i + 1);
+            int ms = num(i + 2), div = 8;
+            if (i + 3 < argc && iswdigit(argv[i + 3][0])) div = num(i + 3), i += 1;
+            if (!Burst(folder, ms, div)) rc = 1;
+            i += 3;
         } else if (cmd == L"move") {
             MoveTo(num(i + 1), num(i + 2));
             i += 3;

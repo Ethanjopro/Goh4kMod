@@ -42,13 +42,6 @@ void SetUiClientOrigin(LONG x, LONG y);
 void SetUiClient(UINT realW, UINT realH, bool coversMonitor, const char* why, bool notify = true);
 void SetUiBuffer(UINT w, UINT h);  // the game window's swapchain, after create/resize
 
-// Screen-sized textures the UI draws as images (the blurred backdrop behind prompts). The UI samples them
-// with coordinates of logical / texture size, so whatever renders into them has to fill the logical part.
-// The mark is the frame it was last seen used that way and counts only for 2 frames, so a texture the game
-// later reuses for something else goes back to normal.
-void MarkUiScreenCopy(ID3D11Resource* r);
-bool IsUiScreenCopy(ID3D11Resource* r);
-
 // Something worth knowing, logged once per kind with the details.
 void NoteOnce(const char* kind, const std::string& detail);
 
