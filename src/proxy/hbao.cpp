@@ -1,12 +1,9 @@
-// NVIDIA HBAO+ (GFSDK_SSAO_D3D11.win64.dll 3.1, the game's "SSAO") in 2x mode.
+// NVIDIA HBAO+ (GFSDK_SSAO_D3D11.win64.dll 3.1, the game's "SSAO").
 //
-// HBAO+ sizes everything from the depth buffer it is given, which at 2x is the real 3840x2160 one, so it is
-// already consistent at real size. What broke it (AO for a quarter of the screen, the rest blended to
-// black) were our own rules: its quarter-res 960x540 targets matched the "1/2 of logical" pattern and were
-// doubled, and its real 3840x2160 viewports were normalised to the logical 1920x1080. So HBAO+'s own calls
-// are recognised by return address and left alone: its textures are never scaled and its viewports are
-// taken as real. No HBAO+ code or memory is hooked (an earlier RenderAO hook turned out unnecessary: the
-// game passes no input viewport).
+// HBAO+ sizes everything from the depth buffer it is given and sets its own viewports, so it is consistent
+// at the real resolution by itself. Its calls are recognised by return address and the full-screen viewport
+// rules (context.cpp) never touch them; 1.x learnt the hard way that rewriting its viewports breaks AO. No
+// HBAO+ code or memory is hooked.
 #include "hbao.h"
 #include "scale.h"
 
@@ -18,7 +15,7 @@ bool FromHbao(void* ret) { return (uintptr_t)ret >= g_hbaoBase && (uintptr_t)ret
 
 void FindHbaoModule() {
     static bool done = false;
-    if (done || !ScaleConfigured()) return;
+    if (done || !UiScaleConfigured()) return;
     done = true;
     HMODULE m = GetModuleHandleW(L"GFSDK_SSAO_D3D11.win64.dll");
     if (!m) return Log("hbao: GFSDK_SSAO_D3D11.win64.dll not loaded");

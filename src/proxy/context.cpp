@@ -1,81 +1,182 @@
 // WrappedContext action overrides: forward to the real context, and while a trace is active record each
-// action with the state it ran with (diag.cpp). In 2x mode (scale.h) viewports, scissors, copy boxes and
-// ClearView rects follow the scale of the resources involved.
+// action with the state it ran with (diag.cpp). For native scaling (scale.h) a few full-screen viewports and
+// scissors are applied differently from how the game set them; see "full-screen rules" below.
 #include "wrappers.h"
 #include "diag.h"
 #include "scale.h"
 #include "hbao.h"
-#include "cbpatch.h"
 #include <algorithm>
+#include <atomic>
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
 
 namespace goh4k {
 
-// ---------------------------------------------------------------- 2x state
-
 void WrappedContext::ResetTrackedState() {
-    m_psPatch = -1;
     m_numVp = m_numSc = 0;
-    m_targetScale = m_appliedScale = 1;
-    m_targetLogicalW = m_targetLogicalH = 0;
+    m_uiTarget = 0;
+    m_uiVpSwapped = m_uiVpFromHbao = m_uiScFromHbao = false;
+    m_vs = nullptr;
+    m_vsHashKnown = false;
 }
 
-void WrappedContext::TargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv,
-                                    ID3D11UnorderedAccessView* const* uavs, UINT numUavs) {
-    ID3D11View* first = nullptr;
-    for (UINT i = 0; i < numRtvs && rtvs && !first; ++i) first = rtvs[i];
-    if (!first) first = dsv;
-    for (UINT i = 0; i < numUavs && uavs && !first; ++i) first = uavs[i];
-    ScaleTag t = {1, 0, 0};
-    UINT s = Scaling() ? ScaleOfView(first, &t) : 1;
-    m_targetScale = s;
-    m_targetLogicalW = t.logicalW;
-    m_targetLogicalH = t.logicalH;
-    if (s != m_appliedScale) {
-        ApplyViewports();
-        ApplyScissors();
+// ---------------------------------------------------------------- full-screen rules
+// The game's render targets follow its resolution setting (real), its UI projection uses the client size it
+// was told (logical), and its viewports come from either: some from the backbuffer's desc (the real screen),
+// some from the client size (the logical screen). Three mismatches follow, fixed on full-screen rects only:
+// 1. UI label surfaces (render targets smaller than the screen) are drawn with the stale real-screen
+//    viewport, so the glyphs come out magnified and clipped: applied as the logical screen, as native 1080p
+//    does.
+// 2. Tone-map/glow passes on screen-sized targets set the logical-screen viewport, so the image covers only
+//    the top-left part: applied as the real screen. Stock native 4K never sets a 1920x1080 viewport on a
+//    3840x2160 target (captures/20261002-122821-mission-trace.txt).
+// 3. Screen-sized textures the UI draws as images (the blurred backdrop behind prompts) are sampled with
+//    coordinates of logical / texture size, so only their top-left part shows, magnified. Such textures are
+//    marked when a UI draw samples one (UiBeforeDraw); from then on they are treated like rule 1, so the
+//    game's full-screen pass into them fills exactly that part.
+// Other rects, other targets and HBAO+ are left alone; RSGet* return the game's own values. "fix nouivp on"
+// switches all three off for A/B.
+
+enum UiTarget { kUiOther = 0, kUiBelow = 1, kUiScreen = 2, kUiCopy = 3 };
+
+static int UiTargetClass(ID3D11View* v, bool render) {
+    if (!v) return kUiOther;
+    ID3D11Resource* r = nullptr;
+    v->GetResource(&r);
+    int c = kUiOther;
+    ID3D11Texture2D* t = nullptr;
+    if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
+        D3D11_TEXTURE2D_DESC d;
+        t->GetDesc(&d);
+        UINT rw = g_uiRealW, rh = g_uiRealH;
+        if (render && IsUiScreenCopy(r)) c = kUiCopy;
+        else if (d.Width == rw && d.Height == rh) c = kUiScreen;
+        else if (render && (d.Width < rw || d.Height < rh)) c = kUiBelow;
+        t->Release();
+    }
+    if (r) r->Release();
+    return c;
+}
+
+void WrappedContext::UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv) {
+    ID3D11RenderTargetView* rt0 = rtvs && numRtvs ? rtvs[0] : nullptr;
+    int c = rt0 ? UiTargetClass(rt0, true) : UiTargetClass(dsv, false);
+    if (c != m_uiTarget) {
+        m_uiTarget = c;
+        if (m_numVp) UiApplyViewports();
+        if (m_numSc) UiApplyScissors();
     }
 }
 
-void WrappedContext::ApplyViewports() {
-    UINT ts = Scaling() ? m_targetScale : 1;  // the targets may predate 2x being switched off
-    m_appliedScale = ts;
-    if (ts <= 1 || !m_numVp) return m_real->RSSetViewports(m_numVp, m_vp);
+// The full-screen size to swap on the bound target, and what it becomes.
+static bool UiSwap(int target, UINT* fromW, UINT* fromH, UINT* toW, UINT* toH) {
+    if (target == kUiOther || !UiScaleActive()) return false;
+    Ratio q = UiScaleRatio();
+    UINT rw = g_uiRealW, rh = g_uiRealH, lw = (UINT)RatioDown((long)rw, q), lh = (UINT)RatioDown((long)rh, q);
+    if (target == kUiScreen) *fromW = lw, *fromH = lh, *toW = rw, *toH = rh;
+    else *fromW = rw, *fromH = rh, *toW = lw, *toH = lh;
+    return true;
+}
+
+static const char* UiRuleName(int target, bool scissor) {
+    switch (target) {
+        case kUiBelow: return scissor ? "ui-label-scissor" : "ui-label-viewport";
+        case kUiScreen: return scissor ? "ui-screen-scissor" : "ui-screen-viewport";
+        default: return scissor ? "ui-copy-scissor" : "ui-copy-viewport";
+    }
+}
+
+void WrappedContext::UiApplyViewports() {
+    UINT fw = 0, fh = 0, tw = 0, th = 0;
+    bool rule = m_numVp && !m_uiVpFromHbao && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
     D3D11_VIEWPORT v[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-    float s = (float)ts;
+    bool changed = false;
     for (UINT i = 0; i < m_numVp; ++i) {
         v[i] = m_vp[i];
-        // A viewport bigger than the target's logical size means the game already used real sizes.
-        if (m_targetLogicalW && (m_vp[i].TopLeftX + m_vp[i].Width > m_targetLogicalW + 0.5f ||
-                                 m_vp[i].TopLeftY + m_vp[i].Height > m_targetLogicalH + 0.5f)) {
-            NoteOnce("viewport-already-real",
-                     Fmt("viewport %gx%g on a target with logical size %ux%u left unscaled", m_vp[i].Width,
-                         m_vp[i].Height, m_targetLogicalW, m_targetLogicalH));
-            continue;
+        if (rule && v[i].TopLeftX == 0 && v[i].TopLeftY == 0 && v[i].Width == (float)fw && v[i].Height == (float)fh) {
+            v[i].Width = (float)tw;
+            v[i].Height = (float)th;
+            changed = true;
         }
-        v[i].TopLeftX *= s;
-        v[i].TopLeftY *= s;
-        v[i].Width *= s;
-        v[i].Height *= s;
     }
-    m_real->RSSetViewports(m_numVp, v);
+    m_uiVpSwapped = changed;
+    if (changed) NoteOnce(UiRuleName(m_uiTarget, false), Fmt("full-screen viewport %ux%u applied as %ux%u", fw, fh, tw, th));
+    m_real->RSSetViewports(m_numVp, m_numVp ? v : nullptr);
 }
 
-void WrappedContext::ApplyScissors() {
-    UINT ts = Scaling() ? m_targetScale : 1;
-    if (ts <= 1 || !m_numSc) return m_real->RSSetScissorRects(m_numSc, m_sc);
+void WrappedContext::UiApplyScissors() {
+    UINT fw = 0, fh = 0, tw = 0, th = 0;
+    bool rule = m_numSc && !m_uiScFromHbao && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
     D3D11_RECT r[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-    LONG s = (LONG)ts;
-    for (UINT i = 0; i < m_numSc; ++i)
-        r[i] = {m_sc[i].left * s, m_sc[i].top * s, m_sc[i].right * s, m_sc[i].bottom * s};
-    m_real->RSSetScissorRects(m_numSc, r);
+    bool changed = false;
+    for (UINT i = 0; i < m_numSc; ++i) {
+        r[i] = m_sc[i];
+        if (rule && r[i].left == 0 && r[i].top == 0 && r[i].right == (LONG)fw && r[i].bottom == (LONG)fh) {
+            r[i].right = (LONG)tw;
+            r[i].bottom = (LONG)th;
+            changed = true;
+        }
+    }
+    if (changed) NoteOnce(UiRuleName(m_uiTarget, true), Fmt("full-screen scissor %ux%u applied as %ux%u", fw, fh, tw, th));
+    m_real->RSSetScissorRects(m_numSc, m_numSc ? r : nullptr);
+}
+
+// UI draws are recognised by their vertex shader, learnt from the indexed draws into label surfaces whose
+// stale viewport rule 1 swapped (the game's UI draws quads with DrawIndexed; its post-processing uses Draw).
+// By bytecode id, not pointer: the game creates the same UI shader more than once.
+static std::atomic<uint64_t> g_uiVs[4];
+
+static bool IsUiVs(uint64_t h) {
+    for (auto& p : g_uiVs)
+        if (h && p.load(std::memory_order_relaxed) == h) return true;
+    return false;
+}
+
+static void LearnUiVs(uint64_t h) {
+    if (!h || IsUiVs(h)) return;
+    for (auto& p : g_uiVs) {
+        uint64_t none = 0;
+        if (p.compare_exchange_strong(none, h)) {
+            Log("ui: vertex shader %016llx recognised as the UI's (it draws into label surfaces)", (unsigned long long)h);
+            return;
+        }
+    }
+}
+
+// Before each indexed draw: learn the UI's vertex shader (rule 1 draws), or mark a screen-sized texture that a
+// UI draw onto a screen-sized target samples as its image (rule 3).
+void WrappedContext::UiBeforeDraw() {
+    if (!m_vs || !UiScaleActive() || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen)) return;
+    if (!m_vsHashKnown) m_vsHash = ShaderHash(m_vs), m_vsHashKnown = true;
+    if (m_uiTarget == kUiBelow) {
+        if (m_uiVpSwapped) LearnUiVs(m_vsHash);
+        return;
+    }
+    if (!IsUiVs(m_vsHash)) return;
+    ID3D11ShaderResourceView* srv = nullptr;
+    m_real->PSGetShaderResources(0, 1, &srv);
+    if (!srv) return;
+    ID3D11Resource* r = nullptr;
+    srv->GetResource(&r);
+    srv->Release();
+    ID3D11Texture2D* t = nullptr;
+    if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
+        D3D11_TEXTURE2D_DESC d;
+        t->GetDesc(&d);
+        if (d.Width == g_uiRealW && d.Height == g_uiRealH && (d.BindFlags & D3D11_BIND_RENDER_TARGET) && !IsUiScreenCopy(r)) {
+            MarkUiScreenCopy(r);
+            Log("ui: %ux%u fmt=%d texture drawn by the UI as an image; renders into it fill the logical part from now on",
+                d.Width, d.Height, (int)d.Format);
+        }
+        t->Release();
+    }
+    if (r) r->Release();
 }
 
 void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargets(UINT NumViews, ID3D11RenderTargetView* const* ppRenderTargetViews,
                                                          ID3D11DepthStencilView* pDepthStencilView) {
     m_real->OMSetRenderTargets(NumViews, ppRenderTargetViews, pDepthStencilView);
-    if (ScaleConfigured()) TargetsChanged(ppRenderTargetViews, NumViews, pDepthStencilView, nullptr, 0);
+    if (UiScaleConfigured()) UiTargetsChanged(ppRenderTargetViews, NumViews, pDepthStencilView);
 }
 
 void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargetsAndUnorderedAccessViews(
@@ -84,50 +185,30 @@ void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargetsAndUnorderedAccessViews
     const UINT* pUAVInitialCounts) {
     m_real->OMSetRenderTargetsAndUnorderedAccessViews(NumRTVs, ppRenderTargetViews, pDepthStencilView, UAVStartSlot,
                                                       NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
-    if (ScaleConfigured() && NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
-        TargetsChanged(ppRenderTargetViews, NumRTVs, pDepthStencilView,
-                       NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? ppUnorderedAccessViews : nullptr,
-                       NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS ? NumUAVs : 0);
-}
-
-// The game sizes its screen viewport from the backbuffer texture's own GetDesc, which reports the real
-// size. A viewport/scissor covering exactly the real screen is stored as the logical screen: on scaled
-// targets that re-applies to the same real size, and on unscaled targets (UI label textures drawn with
-// the stale screen viewport) it gives what native 1080p would have used.
-static bool IsRealScreen(float x, float y, float w, float h) {
-    UINT s = (UINT)g_cfg.scale, lw = g_logicalW, lh = g_logicalH;
-    return lw && x == 0 && y == 0 && w == (float)(lw * s) && h == (float)(lh * s);
+    if (UiScaleConfigured() && NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL)
+        UiTargetsChanged(ppRenderTargetViews, NumRTVs, pDepthStencilView);
 }
 
 void STDMETHODCALLTYPE WrappedContext::RSSetViewports(UINT NumViewports, const D3D11_VIEWPORT* pViewports) {
-    if (!ScaleConfigured()) return m_real->RSSetViewports(NumViewports, pViewports);
+    if (!UiScaleConfigured()) return m_real->RSSetViewports(NumViewports, pViewports);
     m_numVp = std::min<UINT>(NumViewports, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pViewports) memcpy(m_vp, pViewports, m_numVp * sizeof(D3D11_VIEWPORT));
     else m_numVp = 0;
-    for (UINT i = 0; i < m_numVp && Scaling() && !FromHbao(_ReturnAddress()); ++i)  // HBAO+ works at real size
-        if (IsRealScreen(m_vp[i].TopLeftX, m_vp[i].TopLeftY, m_vp[i].Width, m_vp[i].Height)) {
-            m_vp[i].Width = (float)g_logicalW;
-            m_vp[i].Height = (float)g_logicalH;
-        }
-    ApplyViewports();
+    m_uiVpFromHbao = FromHbao(_ReturnAddress());
+    UiApplyViewports();
 }
 
 void STDMETHODCALLTYPE WrappedContext::RSSetScissorRects(UINT NumRects, const D3D11_RECT* pRects) {
-    if (!ScaleConfigured()) return m_real->RSSetScissorRects(NumRects, pRects);
+    if (!UiScaleConfigured()) return m_real->RSSetScissorRects(NumRects, pRects);
     m_numSc = std::min<UINT>(NumRects, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pRects) memcpy(m_sc, pRects, m_numSc * sizeof(D3D11_RECT));
     else m_numSc = 0;
-    for (UINT i = 0; i < m_numSc && Scaling() && !FromHbao(_ReturnAddress()); ++i)
-        if (IsRealScreen((float)m_sc[i].left, (float)m_sc[i].top, (float)(m_sc[i].right - m_sc[i].left),
-                         (float)(m_sc[i].bottom - m_sc[i].top))) {
-            m_sc[i].right = (LONG)g_logicalW;
-            m_sc[i].bottom = (LONG)g_logicalH;
-        }
-    ApplyScissors();
+    m_uiScFromHbao = FromHbao(_ReturnAddress());
+    UiApplyScissors();
 }
 
 void STDMETHODCALLTYPE WrappedContext::RSGetViewports(UINT* pNumViewports, D3D11_VIEWPORT* pViewports) {
-    if (!Scaling() || !pNumViewports) return m_real->RSGetViewports(pNumViewports, pViewports);
+    if (!UiScaleConfigured() || !pNumViewports) return m_real->RSGetViewports(pNumViewports, pViewports);
     if (pViewports) {
         UINT n = std::min(*pNumViewports, m_numVp);
         memcpy(pViewports, m_vp, n * sizeof(D3D11_VIEWPORT));
@@ -137,7 +218,7 @@ void STDMETHODCALLTYPE WrappedContext::RSGetViewports(UINT* pNumViewports, D3D11
 }
 
 void STDMETHODCALLTYPE WrappedContext::RSGetScissorRects(UINT* pNumRects, D3D11_RECT* pRects) {
-    if (!Scaling() || !pNumRects) return m_real->RSGetScissorRects(pNumRects, pRects);
+    if (!UiScaleConfigured() || !pNumRects) return m_real->RSGetScissorRects(pNumRects, pRects);
     if (pRects) {
         UINT n = std::min(*pNumRects, m_numSc);
         memcpy(pRects, m_sc, n * sizeof(D3D11_RECT));
@@ -151,35 +232,13 @@ void STDMETHODCALLTYPE WrappedContext::ClearState() {
     ResetTrackedState();
 }
 
-// ---------------------------------------------------------------- constant-buffer patches
-
-void STDMETHODCALLTYPE WrappedContext::PSSetShader(ID3D11PixelShader* pPixelShader,
+void STDMETHODCALLTYPE WrappedContext::VSSetShader(ID3D11VertexShader* pVertexShader,
                                                   ID3D11ClassInstance* const* ppClassInstances, UINT NumClassInstances) {
-    m_real->PSSetShader(pPixelShader, ppClassInstances, NumClassInstances);
-    if (Scaling()) m_psPatch = ShaderPatchIndex(pPixelShader);
+    m_real->VSSetShader(pVertexShader, ppClassInstances, NumClassInstances);
+    if (pVertexShader != m_vs) m_vs = pVertexShader, m_vsHashKnown = false;
 }
 
-HRESULT STDMETHODCALLTYPE WrappedContext::Map(ID3D11Resource* pResource, UINT Subresource, D3D11_MAP MapType,
-                                             UINT MapFlags, D3D11_MAPPED_SUBRESOURCE* pMappedResource) {
-    pResource = UnwrapResource(pResource);
-    HRESULT hr = m_real->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
-    if (SUCCEEDED(hr) && pMappedResource && MapType != D3D11_MAP_READ && IsTrackedCb(pResource)) {
-        m_mappedCb = pResource;
-        m_mappedCbData = pMappedResource->pData;
-    }
-    return hr;
-}
-
-void STDMETHODCALLTYPE WrappedContext::Unmap(ID3D11Resource* pResource, UINT Subresource) {
-    pResource = UnwrapResource(pResource);
-    if (m_mappedCb && pResource == m_mappedCb) {
-        TrackCbMapped(pResource, m_mappedCbData);
-        m_mappedCb = nullptr;
-    }
-    m_real->Unmap(pResource, Subresource);
-}
-
-static std::string Pair(ID3D11Resource* dst, ID3D11Resource* src) { return "dst " + ResTag(dst) + " src " + ResTag(src); }
+// ---------------------------------------------------------------- actions
 
 // Arguments are only formatted while a trace is active.
 #define TRACE_ACTION(kind, ...) \
@@ -192,14 +251,13 @@ static std::string BoxStr(const D3D11_BOX* b) {
 }
 
 void STDMETHODCALLTYPE WrappedContext::DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
+    if (UiScaleConfigured()) UiBeforeDraw();
     TRACE_ACTION(TraceKind::Draw, "DrawIndexed(%u,%u,%d)", IndexCount, StartIndexLocation, BaseVertexLocation);
     m_real->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::Draw(UINT VertexCount, UINT StartVertexLocation) {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "Draw(%u,%u)", VertexCount, StartVertexLocation);
     m_real->Draw(VertexCount, StartVertexLocation);
     TRACE_AFTER();
@@ -208,7 +266,6 @@ void STDMETHODCALLTYPE WrappedContext::Draw(UINT VertexCount, UINT StartVertexLo
 void STDMETHODCALLTYPE WrappedContext::DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount,
                                                            UINT StartIndexLocation, INT BaseVertexLocation,
                                                            UINT StartInstanceLocation) {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexedInstanced(%u,%u)", IndexCountPerInstance, InstanceCount);
     m_real->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
                                  StartInstanceLocation);
@@ -217,14 +274,12 @@ void STDMETHODCALLTYPE WrappedContext::DrawIndexedInstanced(UINT IndexCountPerIn
 
 void STDMETHODCALLTYPE WrappedContext::DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount,
                                                     UINT StartVertexLocation, UINT StartInstanceLocation) {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawInstanced(%u,%u)", VertexCountPerInstance, InstanceCount);
     m_real->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::DrawAuto() {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawAuto()");
     m_real->DrawAuto();
     TRACE_AFTER();
@@ -232,14 +287,12 @@ void STDMETHODCALLTYPE WrappedContext::DrawAuto() {
 
 void STDMETHODCALLTYPE WrappedContext::DrawIndexedInstancedIndirect(ID3D11Buffer* pBufferForArgs,
                                                                    UINT AlignedByteOffsetForArgs) {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexedInstancedIndirect");
     m_real->DrawIndexedInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::DrawInstancedIndirect(ID3D11Buffer* pBufferForArgs, UINT AlignedByteOffsetForArgs) {
-    CbPatchScope cbp(this, m_psPatch, m_targetScale);
     TRACE_ACTION(TraceKind::Draw, "DrawInstancedIndirect");
     m_real->DrawInstancedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
     TRACE_AFTER();
@@ -260,23 +313,8 @@ void STDMETHODCALLTYPE WrappedContext::DispatchIndirect(ID3D11Buffer* pBufferFor
 void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion(ID3D11Resource* pDstResource, UINT DstSubresource, UINT DstX,
                                                             UINT DstY, UINT DstZ, ID3D11Resource* pSrcResource,
                                                             UINT SrcSubresource, const D3D11_BOX* pSrcBox) {
-    pDstResource = UnwrapResource(pDstResource);
-    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
-    if (Scaling()) {
-        UINT ds = ScaleOf(pDstResource), ss = ScaleOf(pSrcResource);
-        if (ds != ss) NoteOnce("copy-region-mixed-scale", Pair(pDstResource, pSrcResource));
-        if (ds > 1 && ds == ss) {
-            D3D11_BOX b;
-            if (pSrcBox) b = {pSrcBox->left * ds, pSrcBox->top * ds, pSrcBox->front, pSrcBox->right * ds,
-                              pSrcBox->bottom * ds, pSrcBox->back};
-            m_real->CopySubresourceRegion(pDstResource, DstSubresource, DstX * ds, DstY * ds, DstZ, pSrcResource,
-                                          SrcSubresource, pSrcBox ? &b : nullptr);
-            TRACE_AFTER();
-            return;
-        }
-    }
     m_real->CopySubresourceRegion(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
     TRACE_AFTER();
 }
@@ -285,35 +323,16 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
                                                              UINT DstX, UINT DstY, UINT DstZ,
                                                              ID3D11Resource* pSrcResource, UINT SrcSubresource,
                                                              const D3D11_BOX* pSrcBox, UINT CopyFlags) {
-    pDstResource = UnwrapResource(pDstResource);
-    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion1 dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
-    if (Scaling()) {
-        UINT ds = ScaleOf(pDstResource), ss = ScaleOf(pSrcResource);
-        if (ds != ss) NoteOnce("copy-region-mixed-scale", Pair(pDstResource, pSrcResource));
-        if (ds > 1 && ds == ss) {
-            D3D11_BOX b;
-            if (pSrcBox) b = {pSrcBox->left * ds, pSrcBox->top * ds, pSrcBox->front, pSrcBox->right * ds,
-                              pSrcBox->bottom * ds, pSrcBox->back};
-            m_real->CopySubresourceRegion1(pDstResource, DstSubresource, DstX * ds, DstY * ds, DstZ, pSrcResource,
-                                           SrcSubresource, pSrcBox ? &b : nullptr, CopyFlags);
-            TRACE_AFTER();
-            return;
-        }
-    }
     m_real->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource,
                                    pSrcBox, CopyFlags);
     TRACE_AFTER();
 }
 
 void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource, ID3D11Resource* pSrcResource) {
-    pDstResource = UnwrapResource(pDstResource);
-    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "CopyResource dst=%s src=%s", ResTag(pDstResource).c_str(),
                  ResTag(pSrcResource).c_str());
-    if (Scaling() && ScaleOf(pDstResource) != ScaleOf(pSrcResource))
-        NoteOnce("copy-resource-mixed-scale", Pair(pDstResource, pSrcResource));
     m_real->CopyResource(pDstResource, pSrcResource);
     TRACE_AFTER();
 }
@@ -321,11 +340,8 @@ void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource
 void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                         const D3D11_BOX* pDstBox, const void* pSrcData,
                                                         UINT SrcRowPitch, UINT SrcDepthPitch) {
-    pDstResource = UnwrapResource(pDstResource);
-    TrackCbUpdate(pDstResource, pDstBox, pSrcData);
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
-    if (Scaling() && ScaleOf(pDstResource) > 1) NoteOnce("update-scaled-resource", "dst " + ResTag(pDstResource));
     m_real->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
     TRACE_AFTER();
 }
@@ -333,8 +349,6 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstRes
 void STDMETHODCALLTYPE WrappedContext::UpdateSubresource1(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                          const D3D11_BOX* pDstBox, const void* pSrcData,
                                                          UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags) {
-    pDstResource = UnwrapResource(pDstResource);
-    TrackCbUpdate(pDstResource, pDstBox, pSrcData);
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource1 dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     m_real->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
@@ -374,17 +388,6 @@ void STDMETHODCALLTYPE WrappedContext::ClearDepthStencilView(ID3D11DepthStencilV
 void STDMETHODCALLTYPE WrappedContext::ClearView(ID3D11View* pView, const FLOAT Color[4], const D3D11_RECT* pRect,
                                                 UINT NumRects) {
     TRACE_ACTION(TraceKind::Plain, "ClearView %s rects=%u", ViewTag(pView).c_str(), NumRects);
-    if (Scaling() && pRect && NumRects && NumRects <= 64) {
-        UINT s = ScaleOfView(pView);
-        if (s > 1) {
-            D3D11_RECT r[64];
-            for (UINT i = 0; i < NumRects; ++i)
-                r[i] = {pRect[i].left * (LONG)s, pRect[i].top * (LONG)s, pRect[i].right * (LONG)s, pRect[i].bottom * (LONG)s};
-            m_real->ClearView(pView, Color, r, NumRects);
-            TRACE_AFTER();
-            return;
-        }
-    }
     m_real->ClearView(pView, Color, pRect, NumRects);
     TRACE_AFTER();
 }
@@ -398,12 +401,8 @@ void STDMETHODCALLTYPE WrappedContext::GenerateMips(ID3D11ShaderResourceView* pS
 void STDMETHODCALLTYPE WrappedContext::ResolveSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
                                                          ID3D11Resource* pSrcResource, UINT SrcSubresource,
                                                          DXGI_FORMAT Format) {
-    pDstResource = UnwrapResource(pDstResource);
-    pSrcResource = UnwrapResource(pSrcResource);
     TRACE_ACTION(TraceKind::Plain, "ResolveSubresource dst=%s/%u src=%s/%u fmt=%d", ResTag(pDstResource).c_str(),
                  DstSubresource, ResTag(pSrcResource).c_str(), SrcSubresource, (int)Format);
-    if (Scaling() && ScaleOf(pDstResource) != ScaleOf(pSrcResource))
-        NoteOnce("resolve-mixed-scale", Pair(pDstResource, pSrcResource));
     m_real->ResolveSubresource(pDstResource, DstSubresource, pSrcResource, SrcSubresource, Format);
     TRACE_AFTER();
 }

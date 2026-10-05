@@ -8,21 +8,23 @@ if ($TestDir) {
     $DeployedList = "$TestDir\deployed.txt"
     $Baseline = "$TestDir\baseline.txt"
     $BackupDir = "$TestDir\stock-backup"
+    $RecordDir = $TestDir
     $LogFile = "$TestDir\LOG.md"
 } else {
     $GameBin = (Get-Content "$Root\.claude\game-bin.txt" -Raw).Trim() -replace '/', '\'
     $DeployedList = "$Root\scratch\deployed.txt"
     $Baseline = "$Root\scratch\baseline-binaries-x64.txt"
     $BackupDir = "$Root\scratch\stock-backup"
+    $RecordDir = "$Root\scratch"  # uninstall keeps old deployed.txt files here as deployed-<time>.txt
     $LogFile = "$Root\LOG.md"
 }
 $GameRoot = Split-Path (Split-Path $GameBin)
 $Product = 'Goh4kMod'
 # Files the game rewrites by itself; a baseline mismatch on these is reported but not a failure.
 $GameManaged = @('announcements.set')
-# Non-DLL files that belong to the mod by name: the release build's settings file, its log, and its
-# diagnostics folder (only created when Diagnostics=1).
-$ModFileNames = @('goh4k.ini', 'goh4k.log')
+# Non-DLL files that belong to the mod by name: the release build's optional settings file, its log, its
+# uninstaller, and its diagnostics folder (only created when Diagnostics=1).
+$ModFileNames = @('goh4k.ini', 'goh4k.log', 'Uninstall Goh4kMod.bat')
 $ModDirNames = @('goh4k-diagnostics')
 
 function Assert-GameNotRunning {

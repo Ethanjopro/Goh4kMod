@@ -1,11 +1,13 @@
 # Goh4kMod
 
-Goal: Call to Arms - Gates of Hell: Ostfront (Steam, GEM2 engine, D3D11, x64) renders its 3D at native 4K
-while the UI keeps its 1080p size.
+Goal: Call to Arms - Gates of Hell: Ostfront (Steam, GEM2 engine, D3D11, x64) runs at the monitor's own
+resolution (1440p, 4K) while the UI keeps its 1080p size, with no game setting to change.
 
-Approach (decided): our own small D3D11/DXGI proxy DLL in the game's binaries\x64, DSfix-style. The game
-believes it runs at 1920x1080; the proxy renders at 2x behind its back and keeps the mouse consistent.
-No WineHooks, DXVK or other third-party runtime in the loop.
+Approach (decided, 2.0): our own small D3D11/DXGI proxy DLL in the game's binaries\x64. The game keeps its
+resolution and renders natively; the proxy only tells it the client area is native/k (k = height/1080)
+and converts the mouse, so the UI lays out at 1080p size (NOTES.md). Keep it as unintrusive as possible:
+Ethan dropped 1.0's 2x render path for that reason. No WineHooks, DXVK or other third-party runtime in
+the loop.
 
 ## Files
 - PLAN.md is the plan. LOG.md is the journal, newest at the bottom: what changed, what worked, what didn't,
@@ -19,9 +21,10 @@ No WineHooks, DXVK or other third-party runtime in the loop.
   .claude/game-bin.txt) is the only outside place that changes, and only through deploy.cmd and
   uninstall.cmd. They back up any stock file they replace into scratch/ and record what they did in LOG.md.
   Steam's file check restores replaced files but never removes added ones.
-- Never install anything system-wide: no installers, winget/choco/scoop, MSI, global pip/npm, drivers or
-  services. Portable zips only, into tools/. Prefer what's already here: MSVC, the Windows SDK, dumpbin.
-- No registry, PATH, environment-variable, startup or Windows settings changes.
+- Nothing system-wide without Ethan's OK at the prompt: installers, winget/choco/scoop, MSI, global
+  pip/npm, drivers, services, and registry, PATH, environment-variable, startup or Windows settings
+  changes. The guard hook asks him. Otherwise portable zips only, into tools/. Prefer what's already here:
+  MSVC, the Windows SDK, dumpbin.
 - If a tool writes outside this folder on its own (settings in AppData, temp captures), point it back
   inside if it allows that; otherwise note it in LOG.md under "Cleanup".
 
@@ -37,4 +40,7 @@ reacts, stop and tell Ethan.
 - Kill processes by exact PID, never by name. Never commit game files, dumps or extracted assets.
 - Keep replies short. Send RenderDoc captures, shader dumps and long build or log output to the
   capture-analyst subagent.
-- Ask before deploying to the game folder, driving the mouse or keyboard, or publishing.
+- Work autonomously: deploy and uninstall, launch the game and drive its mouse and keyboard, and make the
+  PLAN.md "ask first" calls without asking; record each one in LOG.md. Ethan approves only system-wide
+  changes and publishing. The guard hook prompts him for system-wide changes, git push and PRs; ask him
+  before any release upload (Nexus or similar).

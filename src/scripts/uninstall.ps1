@@ -81,7 +81,11 @@ if ($real.Count -eq 0) {
 $logLines += "- $(Get-Stamp) uninstall check: $msg"
 
 if (Test-Path $DeployedList) {
-    Move-Item -LiteralPath $DeployedList "$Root\scratch\deployed-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
+    # Two uninstalls in the same second (the self-test) must not collide.
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    $dest = Join-Path $RecordDir "deployed-$stamp.txt"
+    for ($n = 1; Test-Path -LiteralPath $dest; $n++) { $dest = Join-Path $RecordDir "deployed-$stamp-$n.txt" }
+    Move-Item -LiteralPath $DeployedList $dest
 }
 Add-GameFolderLog $logLines
 exit ([int]($problems -gt 0))

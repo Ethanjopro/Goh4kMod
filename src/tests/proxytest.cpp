@@ -9,6 +9,7 @@
 #include <dxgi1_6.h>
 #include <inspectable.h>
 #include <cstdio>
+#include "../proxy/ratio.h"
 
 static int g_failures = 0;
 #define CHECK(cond, ...)                                    \
@@ -24,7 +25,44 @@ static int g_failures = 0;
 
 typedef HRESULT(WINAPI* PFN_FromDxgi)(IDXGIDevice*, IInspectable**);
 
+// 0) Rational coordinate mapping (ratio.h), exhaustively over a range wider than any screen.
+static void CheckRatioMath() {
+    using namespace goh4k;
+    const Ratio ratios[] = {{2, 1}, {4, 3}, {3, 2}, {8, 3}};
+    for (const Ratio& r : ratios) {
+        int roundTrip = 0, oldFormula = 0, clip = 0;
+        for (long v = -9000; v <= 9000; ++v) {
+            if (RatioDown(RatioUp(v, r), r) != v) ++roundTrip;
+            if (r.d == 1) {  // the 1.0 integer formulas
+                long s = (long)r.n;
+                long oldDown = v >= 0 ? v / s : -((-v + s - 1) / s);
+                if (RatioDown(v, r) != oldDown || RatioUp(v, r) != v * s) ++oldFormula;
+            }
+        }
+        // ClipCursor: real pixels whose Down lies in [l, h) are exactly [Up(l), Up(h)).
+        for (long l = -40; l <= 40; l += 7)
+            for (long h = l + 1; h <= 60; h += 5)
+                for (long p = -200; p <= 200; ++p) {
+                    long d = RatioDown(p, r);
+                    bool inLogical = d >= l && d < h;
+                    bool inReal = p >= RatioUp(l, r) && p < RatioUp(h, r);
+                    if (inLogical != inReal) ++clip;
+                }
+        CHECK(roundTrip == 0, "ratio %lld/%lld: Down(Up(v)) == v for -9000..9000 (%d misses)", r.n, r.d, roundTrip);
+        if (r.d == 1)
+            CHECK(oldFormula == 0, "ratio %lld/1: identical to the 1.0 floor/multiply (%d differences)", r.n, oldFormula);
+        CHECK(clip == 0, "ratio %lld/%lld: ClipCursor edges cover exactly the logical rect (%d misses)", r.n, r.d, clip);
+    }
+    Ratio a = RatioForHeight(2160, 1080), b = RatioForHeight(1440, 1080), c = RatioForHeight(2880, 1080),
+          e = RatioForHeight(1080, 1080), f = RatioForHeight(768, 1080);
+    CHECK(a.n == 2 && a.d == 1 && b.n == 4 && b.d == 3 && c.n == 8 && c.d == 3 && e.n == 1 && e.d == 1 && f.n == 1 &&
+              f.d == 1,
+          "ratio for heights 2160/1440/2880/1080/768: %lld/%lld %lld/%lld %lld/%lld %lld/%lld %lld/%lld", a.n, a.d, b.n, b.d,
+          c.n, c.d, e.n, e.d, f.n, f.d);
+}
+
 int main() {
+    CheckRatioMath();
     wchar_t dir[MAX_PATH];
     GetModuleFileNameW(nullptr, dir, MAX_PATH);
     *wcsrchr(dir, L'\\') = 0;
@@ -184,7 +222,9 @@ int main() {
         ID3D11RenderTargetView* rtv = nullptr;
         if (bb) dev->CreateRenderTargetView(bb, nullptr, &rtv);
         float color[4] = {frame / 120.0f, 0.2f, 0.4f, 1.0f};
-        if (def && rtv && frame % 30 == 0) {
+        // Deferred frames stop before the dumprt request (frame 170), so its event #1 is always a clear on
+        // the immediate context, whichever frame the 4-per-second request poll arms it for.
+        if (def && rtv && frame % 30 == 0 && frame < 170) {
             def->ClearRenderTargetView(rtv, color);
             ID3D11CommandList* cl = nullptr;
             def->FinishCommandList(FALSE, &cl);
@@ -237,75 +277,59 @@ int main() {
         }
     }
 
-    // 5b) 2x mode checks (only when config\goh4k.ini has Scale=2).
     wchar_t ini[MAX_PATH];
     swprintf_s(ini, L"%s\\config\\goh4k.ini", root);
-    int scale = GetPrivateProfileIntW(L"proxy", L"Scale", 1, ini);
-    if (scale == 2) {
-        DXGI_SWAP_CHAIN_DESC d = {};
-        sc->GetDesc(&d);
-        ID3D11Texture2D* bb = nullptr;
-        sc->GetBuffer(0, IID_PPV_ARGS(&bb));
-        D3D11_TEXTURE2D_DESC bd = {}, rd = {};
-        if (bb) {
-            bb->GetDesc(&bd);  // the wrapper: logical size
-            ID3D11RenderTargetView* v = nullptr;
-            dev->CreateRenderTargetView(bb, nullptr, &v);  // must be unwrapped to work at all
-            if (v) {
-                ID3D11Resource* r = nullptr;
-                v->GetResource(&r);  // the real texture
-                if (r) static_cast<ID3D11Texture2D*>(r)->GetDesc(&rd), r->Release();
-                v->Release();
-            }
-            bb->Release();
-        }
-        CHECK(d.BufferDesc.Width == 800 && d.BufferDesc.Height == 450, "2x: GetDesc reports logical 800x450 (%ux%u)",
-              d.BufferDesc.Width, d.BufferDesc.Height);
-        CHECK(bd.Width == 800 && bd.Height == 450, "2x: backbuffer GetDesc reports logical 800x450 (%ux%u)", bd.Width,
-              bd.Height);
-        CHECK(rd.Width == 1600 && rd.Height == 900, "2x: real backbuffer behind the view is 1600x900 (%ux%u)", rd.Width,
-              rd.Height);
-        auto make = [&](UINT w, UINT h, UINT bind, UINT* rw, UINT* rh) {
-            D3D11_TEXTURE2D_DESC td = {w, h, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT, bind, 0, 0};
-            ID3D11Texture2D* t = nullptr;
-            dev->CreateTexture2D(&td, nullptr, &t);
-            D3D11_TEXTURE2D_DESC o = {};
-            if (t) t->GetDesc(&o), t->Release();
-            *rw = o.Width, *rh = o.Height;
-        };
-        UINT w, h;
-        make(800, 450, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, &w, &h);
-        CHECK(w == 1600 && h == 900, "2x: screen-size RT created at 1600x900 (%ux%u)", w, h);
-        make(400, 225, D3D11_BIND_RENDER_TARGET, &w, &h);
-        CHECK(w == 800 && h == 450, "2x: half-size RT created at 800x450 (%ux%u)", w, h);
-        make(800, 450, D3D11_BIND_SHADER_RESOURCE, &w, &h);
-        CHECK(w == 800 && h == 450, "2x: screen-size SRV-only texture left alone (%ux%u)", w, h);
-        make(512, 512, D3D11_BIND_RENDER_TARGET, &w, &h);
-        CHECK(w == 512 && h == 512, "2x: unrelated 512x512 RT left alone (%ux%u)", w, h);
-        // Viewports read back in logical units.
-        ID3D11Texture2D* bb2 = nullptr;
-        sc->GetBuffer(0, IID_PPV_ARGS(&bb2));
-        ID3D11RenderTargetView* rtv = nullptr;
-        if (bb2) dev->CreateRenderTargetView(bb2, nullptr, &rtv), bb2->Release();
-        D3D11_VIEWPORT vp = {0, 0, 800, 450, 0, 1};
+
+    // 5b) Native scaling checks (config\goh4k.ini UiScale=1, the default): a window with a real 2560x1440 client
+    // gives 4/3. The client size and cursor are divided by it; buffers, textures, screen metrics and the window
+    // rect stay real.
+    int uiScale = GetPrivateProfileIntW(L"proxy", L"UiScale", 1, ini);
+    if (uiScale == 1) {
+        hr = sc->ResizeBuffers(0, 2560, 1440, DXGI_FORMAT_UNKNOWN, 0);
+        CHECK(SUCCEEDED(hr), "ui-scale: ResizeBuffers to 2560x1440 (0x%08lx)", hr);
+        D3D11_TEXTURE2D_DESC td = {2560, 1440, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                   D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0, 0};
+        ID3D11Texture2D* t = nullptr;
+        dev->CreateTexture2D(&td, nullptr, &t);
+        D3D11_TEXTURE2D_DESC o = {};
+        if (t) t->GetDesc(&o), t->Release();
+        CHECK(o.Width == 2560 && o.Height == 1440, "ui-scale: a screen-size render target is created as asked (%ux%u)",
+              o.Width, o.Height);
+        D3D11_VIEWPORT vp = {0, 0, 1920, 1080, 0, 1}, back = {};
         ctx->RSSetViewports(1, &vp);
-        ctx->OMSetRenderTargets(1, &rtv, nullptr);
-        D3D11_VIEWPORT back = {};
         UINT nvp = 1;
         ctx->RSGetViewports(&nvp, &back);
-        CHECK(nvp == 1 && back.Width == 800 && back.Height == 450, "2x: RSGetViewports returns logical %gx%g", back.Width,
-              back.Height);
-        ctx->OMSetRenderTargets(0, nullptr, nullptr);
-        if (rtv) rtv->Release();
-        // user32: calls from this exe see the logical screen (gdi32 HORZRES is the real one).
+        CHECK(nvp == 1 && back.Width == 1920 && back.Height == 1080, "ui-scale: RSGetViewports returns the game's own %gx%g",
+              back.Width, back.Height);
+        RECT outer = {0, 0, 2560, 1440};  // SetWindowPos isn't hooked
+        AdjustWindowRectExForDpi(&outer, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd));
+        SetWindowPos(hwnd, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        DXGI_SWAP_CHAIN_DESC d = {};
+        sc->GetDesc(&d);
+        CHECK(d.BufferDesc.Width == 2560 && d.BufferDesc.Height == 1440, "ui-scale: GetDesc stays real 2560x1440 (%ux%u)",
+              d.BufferDesc.Width, d.BufferDesc.Height);
+        WINDOWINFO wi = {sizeof(wi)};
+        GetWindowInfo(hwnd, &wi);  // not hooked: the real client rect
+        long realCw = wi.rcClient.right - wi.rcClient.left, realCh = wi.rcClient.bottom - wi.rcClient.top;
+        RECT cr = {};
+        GetClientRect(hwnd, &cr);
+        CHECK(realCw == 2560 && realCh == 1440 && cr.right == 1920 && cr.bottom == 1080,
+              "ui-scale: GetClientRect %ldx%ld for the real %ldx%ld", cr.right, cr.bottom, realCw, realCh);
         HDC dc = GetDC(nullptr);
         int realW = GetDeviceCaps(dc, HORZRES);
         ReleaseDC(nullptr, dc);
-        int logicalW = GetSystemMetrics(SM_CXSCREEN);
-        CHECK(logicalW * 2 == realW, "2x: GetSystemMetrics(SM_CXSCREEN) %d is half of the real %d", logicalW, realW);
-        POINT p;
+        CHECK(GetSystemMetrics(SM_CXSCREEN) == realW, "ui-scale: GetSystemMetrics(SM_CXSCREEN) stays real (%d, %d)",
+              GetSystemMetrics(SM_CXSCREEN), realW);
+        RECT wr = {};
+        GetWindowRect(hwnd, &wr);
+        CHECK(wr.right - wr.left == wi.rcWindow.right - wi.rcWindow.left, "ui-scale: GetWindowRect stays real (%ld wide)",
+              wr.right - wr.left);
+        CURSORINFO ci = {sizeof(ci)};
+        GetCursorInfo(&ci);  // not hooked
+        POINT p = {};
         GetCursorPos(&p);
-        CHECK(p.x < realW / 2 + 1, "2x: GetCursorPos in logical range (%ld)", p.x);
+        long want = (long)goh4k::FloorDiv((int64_t)ci.ptScreenPos.x * 3, 4);
+        CHECK(p.x >= want - 1 && p.x <= want + 1, "ui-scale: GetCursorPos x %ld is 3/4 of the real %ld", p.x, ci.ptScreenPos.x);
     }
 
     // 6) Release everything; the device must reach 0.

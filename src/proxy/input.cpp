@@ -1,12 +1,16 @@
-// Window/input coordinate mapping for 2x mode (M3). The game believes its screen and window are 1920x1080
-// while the real ones are 3840x2160, so the user32 calls it uses for the mouse and window geometry are
-// hooked (MinHook, user32 only): reads are divided by the scale, writes multiplied. Only calls whose return
-// address is inside the game exe are converted; other modules (Steam overlay, drivers) see real values.
-// The game's exe and memory are never touched. Raw-input deltas pass through unchanged.
+// Window/input coordinate mapping for native scaling (scale.h). The game is told its client area is the
+// real one divided by k (1920x1080 at 4K), so the user32 calls it uses for the client size and the mouse
+// are hooked (MinHook, user32 only): reads are divided by k, writes multiplied, with rational rounding
+// (ratio.h). Window position, monitor and display-mode calls are not hooked at all, so the game's
+// resolution logic sees the real values. Only calls whose return address is inside the game exe are
+// converted; other modules (Steam overlay, drivers) see real values. The game's exe and memory are never
+// touched. Raw-input deltas pass through unchanged.
 #include "input.h"
 #include "diag.h"
 #include "scale.h"
 #include "MinHook.h"
+#include <algorithm>
+#include <cmath>
 #include <intrin.h>
 #include <vector>
 #include <windowsx.h>
@@ -14,15 +18,17 @@
 
 namespace goh4k {
 
-static int S() { return Scaling() ? g_cfg.scale : 1; }  // 1 while 2x is off (scale.h)
 static uintptr_t g_exeBase = 0, g_exeEnd = 0;
 
 static bool FromGame(void* ret) { return (uintptr_t)ret >= g_exeBase && (uintptr_t)ret < g_exeEnd; }
 
-static LONG Down(LONG v) { return v >= 0 ? v / S() : -((-v + S() - 1) / S()); }  // floor division
+static Ratio R() { return UiScaleRatio(); }  // 1/1 at 1080p and below: the hooks change nothing
+
+static LONG Down(LONG v) { return RatioDown(v, R()); }  // floor
+static LONG Up(LONG v) { return RatioUp(v, R()); }      // ceiling, so Down(Up(v)) == v
 static void Down(POINT* p) { p->x = Down(p->x), p->y = Down(p->y); }
 static void Down(RECT* r) { r->left = Down(r->left), r->top = Down(r->top), r->right = Down(r->right), r->bottom = Down(r->bottom); }
-static void Up(POINT* p) { p->x *= S(), p->y *= S(); }
+static void Up(POINT* p) { p->x = Up(p->x), p->y = Up(p->y); }
 
 static LPARAM DownLParam(LPARAM lp) {
     return MAKELPARAM((WORD)(SHORT)Down(GET_X_LPARAM(lp)), (WORD)(SHORT)Down(GET_Y_LPARAM(lp)));
@@ -44,14 +50,15 @@ static BOOL WINAPI Hook_GetCursorPos(LPPOINT p) {
 
 static BOOL(WINAPI* Real_SetCursorPos)(int, int);
 static BOOL WINAPI Hook_SetCursorPos(int x, int y) {
-    if (FromGame(_ReturnAddress())) x *= S(), y *= S();
+    if (FromGame(_ReturnAddress())) x = Up(x), y = Up(y);
     return Real_SetCursorPos(x, y);
 }
 
+// Up on every edge: exactly the real pixels whose Down lies inside the game's rect.
 static BOOL(WINAPI* Real_ClipCursor)(const RECT*);
 static BOOL WINAPI Hook_ClipCursor(const RECT* r) {
     if (r && FromGame(_ReturnAddress())) {
-        RECT p = {r->left * S(), r->top * S(), r->right * S(), r->bottom * S()};
+        RECT p = {Up(r->left), Up(r->top), Up(r->right), Up(r->bottom)};
         return Real_ClipCursor(&p);
     }
     return Real_ClipCursor(r);
@@ -91,52 +98,6 @@ static BOOL WINAPI Hook_GetClientRect(HWND h, LPRECT r) {
     return ok;
 }
 
-static BOOL(WINAPI* Real_GetWindowRect)(HWND, LPRECT);
-static BOOL WINAPI Hook_GetWindowRect(HWND h, LPRECT r) {
-    BOOL ok = Real_GetWindowRect(h, r);
-    if (ok && r && FromGame(_ReturnAddress())) Down(r);
-    return ok;
-}
-
-static int(WINAPI* Real_GetSystemMetrics)(int);
-static int WINAPI Hook_GetSystemMetrics(int i) {
-    int v = Real_GetSystemMetrics(i);
-    if (!FromGame(_ReturnAddress())) return v;
-    switch (i) {
-        case SM_CXSCREEN: case SM_CYSCREEN: case SM_CXVIRTUALSCREEN: case SM_CYVIRTUALSCREEN:
-        case SM_XVIRTUALSCREEN: case SM_YVIRTUALSCREEN: case SM_CXFULLSCREEN: case SM_CYFULLSCREEN:
-        case SM_CXMAXIMIZED: case SM_CYMAXIMIZED: case SM_CXMAXTRACK: case SM_CYMAXTRACK:
-            return Down(v);
-        default: return v;
-    }
-}
-
-static BOOL(WINAPI* Real_GetMonitorInfoW)(HMONITOR, LPMONITORINFO);
-static BOOL WINAPI Hook_GetMonitorInfoW(HMONITOR m, LPMONITORINFO mi) {
-    BOOL ok = Real_GetMonitorInfoW(m, mi);
-    if (ok && mi && FromGame(_ReturnAddress())) Down(&mi->rcMonitor), Down(&mi->rcWork);
-    return ok;
-}
-
-static BOOL(WINAPI* Real_EnumDisplaySettingsW)(LPCWSTR, DWORD, DEVMODEW*);
-static BOOL WINAPI Hook_EnumDisplaySettingsW(LPCWSTR dev, DWORD mode, DEVMODEW* dm) {
-    BOOL ok = Real_EnumDisplaySettingsW(dev, mode, dm);
-    if (ok && dm && (mode == ENUM_CURRENT_SETTINGS || mode == ENUM_REGISTRY_SETTINGS) && FromGame(_ReturnAddress())) {
-        dm->dmPelsWidth = (DWORD)Down((LONG)dm->dmPelsWidth);
-        dm->dmPelsHeight = (DWORD)Down((LONG)dm->dmPelsHeight);
-    }
-    return ok;
-}
-
-static BOOL(WINAPI* Real_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
-static BOOL WINAPI Hook_SetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags) {
-    if (FromGame(_ReturnAddress())) {
-        if (!(flags & SWP_NOMOVE)) x *= S(), y *= S();
-        if (!(flags & SWP_NOSIZE)) cx *= S(), cy *= S();
-    }
-    return Real_SetWindowPos(h, after, x, y, cx, cy, flags);
-}
-
 static void DownMessage(MSG* m) {
     Down(&m->pt);
     if (IsMouseMessage(m->message)) m->lParam = DownLParam(m->lParam);
@@ -157,10 +118,11 @@ static BOOL WINAPI Hook_PeekMessageW(LPMSG m, HWND h, UINT lo, UINT hi, UINT rm)
 }
 
 // ---------------------------------------------------------------- cursor size
-// The game builds its cursors with CreateIconIndirect and Windows draws them at real pixels, so at 2x they
-// look half-size. Cursors (fIcon == FALSE) created by the exe are built at 2x instead: nearest-neighbour
-// colour and mask, doubled hotspot. The game owns and destroys them as usual. "fix nocursorscale on" (set
-// before the cursor is created) keeps the original size.
+// The game builds its cursors with CreateIconIndirect and Windows draws them at real pixels, so next to the
+// magnified UI they would look small. Cursors (fIcon == FALSE) created by the exe are built at k instead:
+// nearest neighbour for whole factors (2 at 4K), an area filter for fractional ones (4/3 at 1440p). The game
+// owns and destroys them as usual. "fix nocursorscale on" (set before the cursor is created) keeps the
+// original size.
 
 static HBITMAP ScaleColorBitmap(HBITMAP src, int s) {
     BITMAP bm = {};
@@ -202,24 +164,119 @@ static HBITMAP ScaleMaskBitmap(HBITMAP src, int s) {
     return out;
 }
 
+// Fractional factors (4/3 at 1440p): a box filter over each output pixel's exact source
+// footprint, weighted by alpha when the cursor has an alpha channel (so transparent pixels don't bleed into
+// the edges); a plain colour average otherwise (mask cursors, alpha all 0).
+static HBITMAP ScaleColorBitmapArea(HBITMAP src, int ow, int oh) {
+    BITMAP bm = {};
+    if (!GetObjectW(src, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return nullptr;
+    int w = bm.bmWidth, h = bm.bmHeight;
+    BITMAPINFO bi = {};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB};
+    std::vector<uint32_t> in((size_t)w * h);
+    HDC dc = GetDC(nullptr);
+    bool ok = GetDIBits(dc, src, 0, h, in.data(), &bi, DIB_RGB_COLORS) == h;
+    HBITMAP out = nullptr;
+    if (ok) {
+        bool alpha = false;
+        for (uint32_t p : in) alpha = alpha || (p >> 24) != 0;
+        BITMAPINFO bo = {};
+        bo.bmiHeader = {sizeof(BITMAPINFOHEADER), ow, -oh, 1, 32, BI_RGB};
+        void* bits = nullptr;
+        out = CreateDIBSection(dc, &bo, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (out && bits) {
+            auto* o = (uint32_t*)bits;
+            double sx = (double)w / ow, sy = (double)h / oh;
+            for (int y = 0; y < oh; ++y)
+                for (int x = 0; x < ow; ++x) {
+                    double y0 = y * sy, y1 = (y + 1) * sy, x0 = x * sx, x1 = (x + 1) * sx;
+                    double c[3] = {}, a = 0, area = 0;
+                    for (int iy = (int)y0; iy < h && iy < y1; ++iy)
+                        for (int ix = (int)x0; ix < w && ix < x1; ++ix) {
+                            double wgt = (std::min(x1, ix + 1.0) - std::max(x0, (double)ix)) *
+                                         (std::min(y1, iy + 1.0) - std::max(y0, (double)iy));
+                            uint32_t p = in[(size_t)iy * w + ix];
+                            double pa = alpha ? (p >> 24) / 255.0 : 1.0;
+                            for (int k = 0; k < 3; ++k) c[k] += wgt * pa * ((p >> (8 * k)) & 0xff);
+                            a += wgt * pa;
+                            area += wgt;
+                        }
+                    uint32_t px = 0;
+                    if (a > 0) {
+                        for (int k = 0; k < 3; ++k) px |= (uint32_t)std::min(255L, std::lround(c[k] / a)) << (8 * k);
+                        if (alpha) px |= (uint32_t)std::min(255L, std::lround(a / area * 255.0)) << 24;
+                    }
+                    o[(size_t)y * ow + x] = px;
+                }
+        }
+    }
+    ReleaseDC(nullptr, dc);
+    return out;
+}
+
+// 1 bpp masks to any size: nearest via StretchBlt. A monochrome cursor (no colour bitmap) stacks AND over
+// XOR in one double-height mask; the halves are scaled separately so they stay aligned.
+static HBITMAP ScaleMaskBitmapTo(HBITMAP src, int ow, int oh, bool stacked) {
+    BITMAP bm = {};
+    if (!GetObjectW(src, sizeof(bm), &bm) || bm.bmWidth <= 0 || bm.bmHeight <= 0) return nullptr;
+    HBITMAP out = CreateBitmap(ow, stacked ? oh * 2 : oh, 1, 1, nullptr);
+    HDC a = CreateCompatibleDC(nullptr), b = CreateCompatibleDC(nullptr);
+    HGDIOBJ oa = SelectObject(a, src), ob = SelectObject(b, out);
+    SetStretchBltMode(b, COLORONCOLOR);
+    if (stacked) {
+        int hh = bm.bmHeight / 2;
+        StretchBlt(b, 0, 0, ow, oh, a, 0, 0, bm.bmWidth, hh, SRCCOPY);
+        StretchBlt(b, 0, oh, ow, oh, a, 0, hh, bm.bmWidth, hh, SRCCOPY);
+    } else {
+        StretchBlt(b, 0, 0, ow, oh, a, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+    }
+    SelectObject(a, oa);
+    SelectObject(b, ob);
+    DeleteDC(a);
+    DeleteDC(b);
+    return out;
+}
+
+// False when cursors stay as they are. The game creates its cursors right after its first Present, when the
+// factor is already known; after a resolution change they keep their size until it makes new ones.
+static bool CursorRatio(Ratio* r) {
+    *r = UiScaleRatio();
+    return UiScaleActive();
+}
+
+static int RoundScaled(int v, Ratio r) { return (int)((2 * v * r.n + r.d) / (2 * r.d)); }
+
 static HICON(WINAPI* Real_CreateIconIndirect)(PICONINFO);
 static HICON WINAPI Hook_CreateIconIndirect(PICONINFO ii) {
-    if (!ii || ii->fIcon || !ii->hbmMask || S() < 2 || !FromGame(_ReturnAddress()) || FixOn("nocursorscale"))
+    Ratio r;
+    if (!ii || ii->fIcon || !ii->hbmMask || !CursorRatio(&r) || !FromGame(_ReturnAddress()) || FixOn("nocursorscale"))
         return Real_CreateIconIndirect(ii);
     ICONINFO big = *ii;
-    big.xHotspot *= S();
-    big.yHotspot *= S();
-    big.hbmMask = ScaleMaskBitmap(ii->hbmMask, S());  // monochrome cursors: AND over XOR, scaled together
-    big.hbmColor = ii->hbmColor ? ScaleColorBitmap(ii->hbmColor, S()) : nullptr;
-    HICON h = (big.hbmMask && (big.hbmColor || !ii->hbmColor)) ? Real_CreateIconIndirect(&big) : nullptr;
+    BITMAP bm = {};
+    GetObjectW(ii->hbmMask, sizeof(bm), &bm);
+    int w = bm.bmWidth, h = ii->hbmColor ? bm.bmHeight : bm.bmHeight / 2;  // monochrome: AND over XOR
+    int ow = std::max(1, RoundScaled(w, r)), oh = std::max(1, RoundScaled(h, r));
+    if (r.d == 1) {  // whole factor: nearest neighbour
+        int s = (int)r.n;
+        big.xHotspot *= s;
+        big.yHotspot *= s;
+        big.hbmMask = ScaleMaskBitmap(ii->hbmMask, s);  // monochrome cursors: AND over XOR, scaled together
+        big.hbmColor = ii->hbmColor ? ScaleColorBitmap(ii->hbmColor, s) : nullptr;
+    } else {
+        big.xHotspot = (DWORD)std::min(RoundScaled((int)ii->xHotspot, r), ow - 1);
+        big.yHotspot = (DWORD)std::min(RoundScaled((int)ii->yHotspot, r), oh - 1);
+        big.hbmMask = ScaleMaskBitmapTo(ii->hbmMask, ow, oh, !ii->hbmColor);
+        big.hbmColor = ii->hbmColor ? ScaleColorBitmapArea(ii->hbmColor, ow, oh) : nullptr;
+    }
+    HICON made = (big.hbmMask && (big.hbmColor || !ii->hbmColor)) ? Real_CreateIconIndirect(&big) : nullptr;
     if (big.hbmMask) DeleteObject(big.hbmMask);  // CreateIconIndirect copies the bitmaps
     if (big.hbmColor) DeleteObject(big.hbmColor);
-    static bool logged = false;
-    if (!logged) {
-        logged = true;
-        Log("input: game cursors are created at %dx (first: %s)", S(), h ? "ok" : "failed, original size used");
-    }
-    return h ? h : Real_CreateIconIndirect(ii);
+    static std::atomic<int> logged{0};
+    if (logged++ < 3)
+        Log("input: game cursor created at %s, %dx%d -> %dx%d (%s)",
+            (r.d == 1 ? Fmt("%lldx", r.n) : Fmt("%lld/%lld", r.n, r.d)).c_str(), w, h, ow, oh,
+            made ? "ok" : "failed, original size used");
+    return made ? made : Real_CreateIconIndirect(ii);
 }
 
 // ---------------------------------------------------------------- window procedure
@@ -236,20 +293,20 @@ static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         RECT r = {};
         Real_GetClientRect(h, &r);
         if (IsIconic(h) || r.right <= 0 || r.bottom <= 0) return 0;
+        SetUiScaleFromClient((UINT)r.right, (UINT)r.bottom, "resync", false);
         LPARAM size = DownLParam(MAKELPARAM(r.right, r.bottom));
         Log("input: WM_SIZE resync %ldx%ld real -> %dx%d", r.right, r.bottom, LOWORD(size), HIWORD(size));
         return CallWindowProcW(g_gameProc, h, WM_SIZE, SIZE_RESTORED, size);
     }
-    switch (m) {
-        case WM_SIZE: case WM_MOVE: l = DownLParam(l); break;
-        case WM_DISPLAYCHANGE: l = MAKELPARAM(LOWORD(l) / S(), HIWORD(l) / S()); break;
-        default: break;
+    if (m == WM_SIZE) {
+        if (w != SIZE_MINIMIZED) SetUiScaleFromClient(LOWORD(l), HIWORD(l), "WM_SIZE", false);  // this message carries it
+        l = DownLParam(l);
     }
     return CallWindowProcW(g_gameProc, h, m, w, l);
 }
 
 void NotifyGameWindowSizeChanged() {
-    if (g_subclassed && PostMessageW(g_subclassed, kResyncSizeMsg, 0, 0)) Log("input: window size resync queued after a 2x switch");
+    if (g_subclassed && PostMessageW(g_subclassed, kResyncSizeMsg, 0, 0)) Log("input: window size resync queued after a scale change");
 }
 
 void SubclassGameWindow(HWND hwnd) {
@@ -260,7 +317,7 @@ void SubclassGameWindow(HWND hwnd) {
     }
     g_gameProc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&SubclassProc);
     g_subclassed = g_gameProc ? hwnd : nullptr;
-    Log("input: game window %p subclassed for WM_SIZE/WM_MOVE/WM_DISPLAYCHANGE (%s)", hwnd, g_gameProc ? "ok" : "failed");
+    Log("input: game window %p subclassed for WM_SIZE (%s)", hwnd, g_gameProc ? "ok" : "failed");
 }
 
 // ---------------------------------------------------------------- install
@@ -292,16 +349,11 @@ void InstallInputHooks() {
     n += Hook("ClientToScreen", &Hook_ClientToScreen, &Real_ClientToScreen);
     n += Hook("MapWindowPoints", &Hook_MapWindowPoints, &Real_MapWindowPoints);
     n += Hook("GetClientRect", &Hook_GetClientRect, &Real_GetClientRect);
-    n += Hook("GetWindowRect", &Hook_GetWindowRect, &Real_GetWindowRect);
-    n += Hook("GetSystemMetrics", &Hook_GetSystemMetrics, &Real_GetSystemMetrics);
-    n += Hook("GetMonitorInfoW", &Hook_GetMonitorInfoW, &Real_GetMonitorInfoW);
-    n += Hook("EnumDisplaySettingsW", &Hook_EnumDisplaySettingsW, &Real_EnumDisplaySettingsW);
-    n += Hook("SetWindowPos", &Hook_SetWindowPos, &Real_SetWindowPos);
     n += Hook("GetMessageW", &Hook_GetMessageW, &Real_GetMessageW);
     n += Hook("PeekMessageW", &Hook_PeekMessageW, &Real_PeekMessageW);
     n += Hook("CreateIconIndirect", &Hook_CreateIconIndirect, &Real_CreateIconIndirect);
     s = MH_EnableHook(MH_ALL_HOOKS);
-    Log("input hooks: %d of 15 user32 functions hooked, enable %s; game exe %p-%p", n, MH_StatusToString(s),
+    Log("input hooks: %d of 10 user32 functions hooked, enable %s; game exe %p-%p", n, MH_StatusToString(s),
         (void*)g_exeBase, (void*)g_exeEnd);
 }
 

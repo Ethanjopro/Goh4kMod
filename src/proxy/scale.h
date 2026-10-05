@@ -1,45 +1,31 @@
-// 2x rendering rules (M3). The game believes its screen is the "logical" size (its swapchain request, e.g.
-// 1920x1080); screen-sized render/depth/UAV targets and their 1/2, 1/4, 1/8 fractions are created at
-// Scale x that size and tagged, and viewports/scissors/copy boxes are scaled while such targets are used.
+// Native scaling: the game keeps its own resolution and renders natively. Only the client size and mouse
+// coordinates it sees are divided by k = real client height / 1080 (input.cpp), so its UI lays out at its
+// 1080p size and is drawn magnified onto the native screen. Full-screen viewport rules fix what that
+// mismatch breaks (context.cpp). Window position, monitor and display-mode queries stay real, so the game's
+// resolution logic, its Options and options.set see no change.
 #pragma once
 #include "common.h"
+#include "ratio.h"
 #include <atomic>
 
 namespace goh4k {
 
-struct ScaleTag {
-    UINT scale;     // 2 for a scaled resource
-    UINT logicalW;  // the size the game asked for
-    UINT logicalH;
-};
+inline bool UiScaleConfigured() { return g_cfg.uiScale != 0; }
+Ratio UiScaleRatio();  // from the client size; 1/1 at 1080p and below
+inline bool UiScaleActive() { return UiScaleConfigured() && !(UiScaleRatio() == Ratio{}); }
+extern std::atomic<UINT> g_uiRealW, g_uiRealH;  // the window's real client size, as last set below
 
-extern std::atomic<UINT> g_logicalW, g_logicalH;  // game's logical screen (swapchain) size; 0 = unknown
+// From the window's real client size (WM_SIZE, or GetClientRect at swapchain create/resize), not the buffer
+// size: after a mode change the buffers stay stale until the game resizes them, which it only does once it
+// has seen a WM_SIZE that matches its new mode. notify: queue a WM_SIZE resync when the factor changes.
+void SetUiScaleFromClient(UINT realW, UINT realH, const char* why, bool notify = true);
 
-// 2x is configured (Scale > 1): hooks are installed at load.
-inline bool ScaleConfigured() { return g_cfg.scale > 1; }
+// Screen-sized textures the UI draws as images (the blurred backdrop behind prompts). The UI samples them
+// with coordinates of logical / texture size, so whatever renders into them has to fill the logical part.
+void MarkUiScreenCopy(ID3D11Resource* r);
+bool IsUiScreenCopy(ID3D11Resource* r);
 
-// 2x is active right now. Set by the swapchain: when the game asks for a resolution whose 2x doesn't fit the
-// monitor (e.g. it is still set to native 4K), the mod steps aside completely (rendering and mouse) until a
-// resolution that fits is chosen. Starts active so the desktop the game sees at startup is the logical one.
-extern std::atomic<bool> g_scaleActive;
-inline bool Scaling() { return g_cfg.scale > 1 && g_scaleActive.load(std::memory_order_relaxed); }
-void SetScaleActive(bool active, const char* why);
-
-// 1 for untagged resources/views. Views are tagged at creation (cheap lookup); untagged views fall back
-// to their resource.
-UINT ScaleOf(ID3D11Resource* r, ScaleTag* tag = nullptr);
-UINT ScaleOfView(ID3D11View* v, ScaleTag* tag = nullptr);
-void TagResource(ID3D11Resource* r, const ScaleTag& t);
-void TagView(ID3D11View* v);  // copies the resource's scale onto the view
-
-// Creation rule: does the game's texture description get the 2x treatment?
-bool WantScaled(const D3D11_TEXTURE2D_DESC& d, bool initialData);
-// A render/depth/UAV target the game created at exactly the real screen size (it read a real-sized desc):
-// tagged as 2x of the logical screen without resizing.
-bool IsRealScreenTarget(const D3D11_TEXTURE2D_DESC& d);
-void LogScaledCreate(const D3D11_TEXTURE2D_DESC& logical);
-
-// Things the M3 rules can't fix yet: logged once per kind with the resources involved.
+// Something worth knowing, logged once per kind with the details.
 void NoteOnce(const char* kind, const std::string& detail);
 
 }  // namespace goh4k

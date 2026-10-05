@@ -1,74 +1,17 @@
-// WrappedSwapChain: forwards everything, counts frames, logs size/mode changes, keeps captures/status.txt
-// current so a session can see the game's state without reading logs, and runs the diagnostics around
-// Present (diag.cpp).
+// WrappedSwapChain: forwards everything, counts frames, logs size/mode changes, keeps the native-scaling
+// factor in step with the window (scale.h), keeps captures/status.txt current so a session can see the
+// game's state without reading logs, and runs the diagnostics around Present (diag.cpp).
 #include "wrappers.h"
 #include "diag.h"
 #include "input.h"
 #include "scale.h"
-#include "texture.h"
 
 namespace goh4k {
-
-// ---------------------------------------------------------------- 2x sizing
-
-// The game asks for logical sizes. Returns whether the request runs at 2x, doubling *w/*h in place if so.
-// A request whose 2x doesn't fit the monitor (the game is set to native 4K, say) runs natively instead;
-// callers switch 2x off for it (SetScaleActive). 0x0 ("use the window size") keeps the current state.
-bool ScaleRequest(HWND hwnd, UINT* w, UINT* h) {
-    if (!ScaleConfigured() || !w || !h) return false;
-    UINT s = (UINT)g_cfg.scale;
-    if (*w == 0 || *h == 0) return g_scaleActive;
-    MONITORINFO mi = {sizeof(mi)};
-    GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);  // not from the exe: real values
-    if (*w * s > (UINT)(mi.rcMonitor.right - mi.rcMonitor.left) || *h * s > (UINT)(mi.rcMonitor.bottom - mi.rcMonitor.top))
-        return false;
-    *w *= s;
-    *h *= s;
-    return true;
-}
-
-void WrappedSwapChain::UpdateLogicalSize() {
-    DXGI_SWAP_CHAIN_DESC d = {};
-    m_real->GetDesc(&d);
-    UINT s = m_scaled ? (UINT)g_cfg.scale : 1;
-    g_logicalW = d.BufferDesc.Width / s;
-    g_logicalH = d.BufferDesc.Height / s;
-    if (ScaleConfigured())
-        Log("logical screen %ux%u, real %ux%u%s", (UINT)g_logicalW, (UINT)g_logicalH, d.BufferDesc.Width,
-            d.BufferDesc.Height, m_scaled ? "" : " (2x off)");
-}
-
-// After a resize decision: remember it, switch 2x on/off, and drop cached backbuffer wrappers.
-void WrappedSwapChain::SetScaled(bool scaled, const char* why) {
-    m_scaled = scaled;
-    SetScaleActive(scaled, why);
-    UpdateLogicalSize();
-    for (auto& b : m_buffers) b = nullptr;  // old wrappers are left to leak (see texture.cpp)
-}
-
-HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) {
-    HRESULT hr = m_real->GetDesc(pDesc);
-    if (SUCCEEDED(hr) && pDesc && m_scaled) {
-        pDesc->BufferDesc.Width /= (UINT)g_cfg.scale;
-        pDesc->BufferDesc.Height /= (UINT)g_cfg.scale;
-    }
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDesc1(DXGI_SWAP_CHAIN_DESC1* pDesc) {
-    HRESULT hr = m_real->GetDesc1(pDesc);
-    if (SUCCEEDED(hr) && pDesc && m_scaled) {
-        pDesc->Width /= (UINT)g_cfg.scale;
-        pDesc->Height /= (UINT)g_cfg.scale;
-    }
-    return hr;
-}
 
 static const IID* const kSwapChainIds[] = {&__uuidof(IDXGISwapChain1), &__uuidof(IDXGISwapChain2),
                                            &__uuidof(IDXGISwapChain3), &__uuidof(IDXGISwapChain4)};
 
-WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device, bool scaled)
-    : m_device(device), m_scaled(scaled) {
+WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) : m_device(device) {
     m_real = reinterpret_cast<IDXGISwapChain4*>(real);
     for (int i = 3; i >= 0; --i) {
         IUnknown* p = nullptr;
@@ -79,14 +22,24 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device, 
             break;
         }
     }
-    Log("swapchain wrapped: real=%p IDXGISwapChain%d%s", real, m_level, m_scaled ? ", 2x" : "");
+    Log("swapchain wrapped: real=%p IDXGISwapChain%d", real, m_level);
     LogState("created");
-    if (ScaleConfigured()) {
-        UpdateLogicalSize();
+    if (UiScaleConfigured()) {
         DXGI_SWAP_CHAIN_DESC d = {};
         m_real->GetDesc(&d);
         SubclassGameWindow(d.OutputWindow);
+        UpdateUiScale("new swapchain");
     }
+}
+
+// The factor follows the window's real client size (scale.h). Called from our module, so GetClientRect isn't
+// converted.
+void WrappedSwapChain::UpdateUiScale(const char* why) {
+    if (!UiScaleConfigured()) return;
+    DXGI_SWAP_CHAIN_DESC d = {};
+    m_real->GetDesc(&d);
+    RECT r = {};
+    if (GetClientRect(d.OutputWindow, &r) && !IsIconic(d.OutputWindow)) SetUiScaleFromClient((UINT)r.right, (UINT)r.bottom, why);
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::QueryInterface(REFIID riid, void** ppv) {
@@ -125,31 +78,6 @@ ULONG STDMETHODCALLTYPE WrappedSwapChain::Release() {
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetDevice(REFIID riid, void** ppDevice) {
     if (m_device) return m_device->QueryInterface(riid, ppDevice);
     return m_real->GetDevice(riid, ppDevice);
-}
-
-HRESULT STDMETHODCALLTYPE WrappedSwapChain::GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) {
-    // In 2x mode the game gets a wrapper whose GetDesc reports the logical size (texture.cpp).
-    bool wrap = m_scaled && ppSurface && Buffer < kMaxBuffers &&
-                (riid == __uuidof(ID3D11Texture2D) || riid == __uuidof(ID3D11Resource));
-    HRESULT hr = m_real->GetBuffer(Buffer, wrap ? __uuidof(ID3D11Texture2D) : riid, ppSurface);
-    if (SUCCEEDED(hr) && m_scaled && ppSurface && *ppSurface) {
-        ID3D11Resource* r = nullptr;
-        if (SUCCEEDED(static_cast<IUnknown*>(*ppSurface)->QueryInterface(IID_PPV_ARGS(&r)))) {
-            TagResource(r, {(UINT)g_cfg.scale, (UINT)g_logicalW, (UINT)g_logicalH});
-            r->Release();
-        }
-    }
-    if (SUCCEEDED(hr) && wrap) {
-        auto* real = static_cast<ID3D11Texture2D*>(*ppSurface);
-        if (!m_buffers[Buffer] || m_buffers[Buffer]->Real() != real)
-            m_buffers[Buffer] = new WrappedTexture2D(real, m_device, g_logicalW, g_logicalH);
-        *ppSurface = static_cast<ID3D11Texture2D*>(m_buffers[Buffer]);  // carries GetBuffer's reference
-    }
-    if (!m_loggedBuffer) {
-        m_loggedBuffer = true;
-        Log("GetBuffer(%u, %s) -> 0x%08lx", Buffer, GuidStr(riid).c_str(), hr);
-    }
-    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::Present(UINT SyncInterval, UINT Flags) {
@@ -200,7 +128,8 @@ void WrappedSwapChain::WriteStatus(ULONGLONG now) {
     text += "swapchain=" + DescribeSwapChainDesc(d) + "\r\n";
     text += Fmt("fullscreen=%d\r\ncolorspace=%d\r\n", fs, m_colorSpace);
     text += "window=" + DescribeWindow(d.OutputWindow) + "\r\n";
-    text += Fmt("config=Wrap=%d Scale=%d\r\n", g_cfg.wrap, g_cfg.scale);
+    Ratio ui = UiScaleRatio();
+    text += Fmt("config=Wrap=%d UiScale=%d (now %lld/%lld)\r\n", g_cfg.wrap, g_cfg.uiScale, ui.n, ui.d);
     WriteTextFile(CapturesDir() + L"\\status.txt", text);
 }
 
@@ -225,12 +154,9 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers(UINT BufferCount, UINT
                                                           DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     Log("ResizeBuffers(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)NewFormat,
         SwapChainFlags);
-    DXGI_SWAP_CHAIN_DESC d = {};
-    m_real->GetDesc(&d);
-    bool scaled = ScaleRequest(d.OutputWindow, &Width, &Height);
     HRESULT hr = m_real->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
-    Log("  -> 0x%08lx%s", hr, scaled && Width ? Fmt(" (real %ux%u)", Width, Height).c_str() : "");
-    if (SUCCEEDED(hr) && ScaleConfigured()) SetScaled(scaled, "ResizeBuffers");
+    Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr)) UpdateUiScale("ResizeBuffers");
     LogState("after ResizeBuffers");
     return hr;
 }
@@ -241,13 +167,10 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers1(UINT BufferCount, UIN
                                                            IUnknown* const* ppPresentQueue) {
     Log("ResizeBuffers1(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)Format,
         SwapChainFlags);
-    DXGI_SWAP_CHAIN_DESC d = {};
-    m_real->GetDesc(&d);
-    bool scaled = ScaleRequest(d.OutputWindow, &Width, &Height);
     HRESULT hr =
         m_real->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     Log("  -> 0x%08lx", hr);
-    if (SUCCEEDED(hr) && ScaleConfigured()) SetScaled(scaled, "ResizeBuffers1");
+    if (SUCCEEDED(hr)) UpdateUiScale("ResizeBuffers1");
     LogState("after ResizeBuffers1");
     return hr;
 }
@@ -258,24 +181,8 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeTarget(const DXGI_MODE_DESC* p
             p->RefreshRate.Numerator, p->RefreshRate.Denominator, (int)p->ScanlineOrdering, (int)p->Scaling);
     else
         Log("ResizeTarget(null)");
-    DXGI_MODE_DESC mode;
-    bool decided = false, scaled = false;
-    if (p && ScaleConfigured() && p->Width && p->Height) {
-        mode = *p;
-        DXGI_SWAP_CHAIN_DESC d = {};
-        m_real->GetDesc(&d);
-        decided = true;
-        scaled = ScaleRequest(d.OutputWindow, &mode.Width, &mode.Height);
-        if (scaled) {
-            Log("  -> real mode %ux%u", mode.Width, mode.Height);
-            p = &mode;
-        }
-    }
     HRESULT hr = m_real->ResizeTarget(p);
     Log("  -> 0x%08lx", hr);
-    // The mode the game chose decides 2x even when the real mode stays the same (e.g. 1920x1080 at 2x and
-    // native 3840x2160 are both a 3840x2160 mode), in which case no ResizeBuffers follows.
-    if (SUCCEEDED(hr) && decided) SetScaled(scaled, "ResizeTarget");
     LogState("after ResizeTarget");
     return hr;
 }

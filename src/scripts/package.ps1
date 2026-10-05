@@ -1,9 +1,10 @@
 # Packages the release build (build.cmd release) into build\release\Goh4kMod-<version>.zip:
-#   d3d11.dll, dxgi.dll (release flavour), goh4k.ini, README.txt, THIRD-PARTY-NOTICES.txt
+#   d3d11.dll, dxgi.dll (release flavour), Uninstall Goh4kMod.bat, README.txt, THIRD-PARTY-NOTICES.txt
+# No goh4k.ini: the release defaults are the shipped settings. The DLL still reads one if a user adds it.
 # Refuses to package if a DLL contains this machine's user name or project path (privacy check).
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
-$Version = '1.0'
+$Version = '2.0'
 $Out = "$Root\build\release"
 $Stage = "$Out\Goh4kMod-$Version"
 $Zip = "$Out\Goh4kMod-$Version.zip"
@@ -27,7 +28,11 @@ foreach ($dll in 'd3d11.dll', 'dxgi.dll') {
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $Stage | Out-Null
 Copy-Item "$Out\d3d11.dll", "$Out\dxgi.dll" $Stage
-Copy-Item "$Root\src\package\goh4k.ini", "$Root\src\package\README.txt", "$Root\src\package\THIRD-PARTY-NOTICES.txt" $Stage
+# Text files go out with CRLF whatever the checkout did: Notepad and cmd.exe both expect it.
+foreach ($name in 'Uninstall Goh4kMod.bat', 'README.txt', 'THIRD-PARTY-NOTICES.txt') {
+    $text = [IO.File]::ReadAllText("$Root\src\package\$name") -replace '\r?\n', "`r`n"
+    [IO.File]::WriteAllText("$Stage\$name", $text, [Text.Encoding]::ASCII)
+}
 Remove-Item $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$Stage\*" -DestinationPath $Zip
 $hashes = Get-ChildItem $Stage | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $_.Name }

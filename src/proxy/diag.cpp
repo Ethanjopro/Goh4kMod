@@ -3,7 +3,6 @@
 #include "diag.h"
 #include "wrappers.h"
 #include "../shared/image.h"
-#include "unwrap.h"
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -86,7 +85,6 @@ static void Report(LONG64 frame, const std::string& msg) {
 
 std::string ResTag(ID3D11Resource* r) {
     if (!r) return "-";
-    r = UnwrapResource(r);
     UINT id = 0, size = sizeof(id);
     if (FAILED(r->GetPrivateData(kResIdGuid, &size, &id)) || size != sizeof(id)) {
         id = g_nextResId++;
@@ -254,7 +252,6 @@ static DXGI_FORMAT StagingFormat(DXGI_FORMAT f) {  // depth formats can't be sta
 // <name>.png, <name>-preview.png and <name>.txt into captures/ on a worker thread.
 static bool CaptureTexture(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Resource* res, const std::string& name,
                            const std::string& note, std::string* result) {
-    res = UnwrapResource(res);
     D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     res->GetType(&dim);
     if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return *result = "not a 2D texture", false;
@@ -618,8 +615,12 @@ void DiagAfterPresent(IDXGISwapChain*, WrappedDevice*, LONG64 frame, double fps)
 
 // ---------------------------------------------------------------- registries
 
+// A shader's id is the first half of its DXBC container's own checksum (FNV-1a for anything else), kept on the
+// shader as 8 bytes of private data. Vertex shaders always get it (the UI's is recognised by it, context.cpp);
+// everything else, and the bytecode copies for dumpshader, only with diagnostics on, like the texture stats,
+// so a normal game session keeps no copies or stats.
 void RegisterShader(ID3D11DeviceChild* shader, const void* bytecode, SIZE_T length, char kind) {
-    if (!shader || !bytecode || !length) return;
+    if (!shader || !bytecode || !length || (kind != 'v' && !g_cfg.diagnostics)) return;
     const uint8_t* p = (const uint8_t*)bytecode;
     uint64_t h = 0;
     if (length >= 20 && memcmp(p, "DXBC", 4) == 0) {
@@ -629,11 +630,20 @@ void RegisterShader(ID3D11DeviceChild* shader, const void* bytecode, SIZE_T leng
         for (SIZE_T i = 0; i < length; ++i) h = (h ^ p[i]) * 1099511628211ull;
     }
     shader->SetPrivateData(kShaderHashGuid, sizeof(h), &h);
+    if (!g_cfg.diagnostics) return;
     std::lock_guard<std::mutex> lock(g_statsMutex);
     if (g_shaders.find(h) == g_shaders.end()) g_shaders.emplace(h, ShaderEntry{kind, std::vector<uint8_t>(p, p + length)});
 }
 
+uint64_t ShaderHash(ID3D11DeviceChild* shader) {
+    uint64_t h = 0;
+    UINT size = sizeof(h);
+    if (!shader || FAILED(shader->GetPrivateData(kShaderHashGuid, &size, &h)) || size != sizeof(h)) return 0;
+    return h;
+}
+
 void RecordTextureCreate(const D3D11_TEXTURE2D_DESC& d, bool initialData) {
+    if (!g_cfg.diagnostics) return;
     std::string key = Fmt("%5ux%-5u f%-3d bind=0x%-3x usage=%d msaa=%u mips=%-2u array=%-2u misc=0x%x%s", d.Width,
                           d.Height, (int)d.Format, d.BindFlags, (int)d.Usage, d.SampleDesc.Count, d.MipLevels,
                           d.ArraySize, d.MiscFlags, initialData ? " +data" : "");

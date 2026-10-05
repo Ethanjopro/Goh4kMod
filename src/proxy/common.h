@@ -19,11 +19,10 @@ namespace goh4k {
 //                  diagnostics (if enabled) in goh4k-diagnostics\ next to the DLL
 struct Config {
     int wrap = 1;         // 0: forward exports and log device creation only; 1: wrap the game's device, contexts, swapchain
+    int uiScale = 1;      // 1: the UI keeps its 1080p size at the game's own resolution (scale.h); 0: pass-through
 #ifdef GOH4K_RELEASE
-    int scale = 2;        // 1: pass-through; 2: render screen-sized targets at 2x
-    int diagnostics = 0;  // 1: request.txt / hotkey / status.txt
+    int diagnostics = 0;  // 1: request.txt / hotkey / status.txt, shader and texture registries
 #else
-    int scale = 1;
     int diagnostics = 1;
 #endif
     int statusMs = 1000;  // how often Present rewrites status.txt

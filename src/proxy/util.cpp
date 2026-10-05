@@ -105,9 +105,10 @@ void Init(HMODULE self) {
     g_shaderDir = base + L"\\scratch\\shaders";
 #endif
     g_cfg.wrap = GetPrivateProfileIntW(L"proxy", L"Wrap", g_cfg.wrap, ini.c_str());
-    g_cfg.scale = GetPrivateProfileIntW(L"proxy", L"Scale", g_cfg.scale, ini.c_str());
+    g_cfg.uiScale = GetPrivateProfileIntW(L"proxy", L"UiScale", g_cfg.uiScale, ini.c_str());
     g_cfg.diagnostics = GetPrivateProfileIntW(L"proxy", L"Diagnostics", g_cfg.diagnostics, ini.c_str());
     g_cfg.statusMs = GetPrivateProfileIntW(L"proxy", L"StatusMs", g_cfg.statusMs, ini.c_str());
+    if (!g_cfg.wrap) g_cfg.uiScale = 0;  // its viewport rules live in the context wrapper
     wchar_t exes[512] = {};
     GetPrivateProfileStringW(L"proxy", L"Exe", L"call_to_arms.exe", exes, 512, ini.c_str());
     bool allowed = ExeAllowed(exes, exeName);
@@ -115,7 +116,7 @@ void Init(HMODULE self) {
 #ifdef GOH4K_RELEASE
     if (!allowed) {  // not the game: no log file, nothing written
         g_cfg.wrap = 0;
-        g_cfg.scale = 1;
+        g_cfg.uiScale = 0;
         g_cfg.diagnostics = 0;
         return;
     }
@@ -135,7 +136,7 @@ void Init(HMODULE self) {
                         FILE_ATTRIBUTE_NORMAL, nullptr);
 #endif
 
-    Log("Goh4kMod 1.0 d3d11 proxy (%s build), built %s %s",
+    Log("Goh4kMod 2.0 d3d11 proxy (%s build), built %s %s",
 #ifdef GOH4K_RELEASE
         "release",
 #else
@@ -144,12 +145,12 @@ void Init(HMODULE self) {
         __DATE__, __TIME__);
     Log("process %lu: %ls", GetCurrentProcessId(), exe);
     Log("proxy: %ls", dll);
-    Log("config %ls: Wrap=%d Scale=%d Diagnostics=%d Exe=%ls", ini.c_str(), g_cfg.wrap, g_cfg.scale, g_cfg.diagnostics,
-        exes);
+    Log("config %ls: Wrap=%d UiScale=%d Diagnostics=%d Exe=%ls", ini.c_str(), g_cfg.wrap, g_cfg.uiScale,
+        g_cfg.diagnostics, exes);
     if (!allowed) {
         Log("%ls is not in Exe=%ls: pass-through only", exeName, exes);
         g_cfg.wrap = 0;
-        g_cfg.scale = 1;
+        g_cfg.uiScale = 0;
     }
 }
 

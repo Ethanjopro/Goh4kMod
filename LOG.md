@@ -1,10 +1,10 @@
 # Goh4kMod log
 
 ## Status
-M1-M5 DONE (2026-10-02).
-- Release 1.0 is INSTALLED, the same files as build\release\Goh4kMod-1.0.zip: d3d11.dll, dxgi.dll and
-  goh4k.ini in binaries\x64.
-- The game is set to 1920x1080 Fullscreen and renders 3840x2160 with the UI at its 1080p size.
+1.0 (M1-M5, 2026-10-02/04) replaced by 2.0 native scaling (2026-10-05, not committed yet).
+- Release 2.0 is INSTALLED, the same files as build\release\Goh4kMod-2.0.zip: d3d11.dll, dxgi.dll and
+  Uninstall Goh4kMod.bat in binaries\x64.
+- The game is set to 3840x2160 Fullscreen (Ethan's choice for 2.0); the UI keeps its 1080p size.
 - Run uninstall.cmd before playing multiplayer.
 - Maintainer notes are in NOTES.md; usage is in PLAN.md "How to use" and the zip's README.txt.
 
@@ -19,12 +19,19 @@ M1-M5 DONE (2026-10-02).
   d3d11 proxy (Goh4k_CreateSwapChain).
 - The proxy log shows 0 bytes in `ls` while the game runs -> NTFS doesn't update the directory size of a
   file that is still open -> read the file itself.
+- A campaign page under the cursor turns main-menu click spots into mission starts (2880,1306 hit
+  CLOSING THE POCKET) -> leave via the top bar (EXIT 2878,46, YES 2056,1196), and snap before clicking.
+- A .bat that deletes itself after `pause` stays behind if the user closes the window with X -> cmd is
+  killed before the del -> delete first on one already-parsed line: `(goto) 2>nul & del "%~f0" & pause`.
 - PowerShell 5.1: casting the empty output of a function to List[object] gives $null, and @() on a generic
   List throws "Argument types do not match" -> build lists with New-Object and pass .ToArray().
-- 2x mode: the game sizes some targets from texture GetDesc (real) and sets viewports from its logical
-  size. Symptoms: cut text labels, quarter-screen or black scene, blur everywhere -> backbuffer wrapper
-  (logical GetDesc, unwrapped by the generated forwarders), real-size targets tagged as 2x, HBAO+ calls
-  exempt by module address. Diagnose with dumprt ps:<shader id> per post stage.
+- Native scaling: the game sizes targets from its mode (real) but takes some viewports and its UI layout
+  from the client size (logical). Symptoms: text 2x and clipped, 3D in the top-left corner, magnified
+  backdrop behind prompts -> the three full-screen rules in context.cpp (NOTES.md point 2), HBAO+ calls
+  exempt by module address. Diagnose with trace + `fix nouivp on|off` on the same frame. (1.x had the
+  mirror-image problem at 2x, fixed with a backbuffer wrapper and target tagging.)
+- A wildcard link (`*.obj`) picks up objects of deleted sources: unresolved externals from a file that no
+  longer exists -> build.cmd deletes the proxy objects before every build.
 - proxytest while the game runs -> the game consumes captures\request.txt -> run tests with the game closed.
 - drive.exe click path at native 4K UI (coordinates change once the game runs at 1080p logical):
   SINGLEPLAYER 1600,1192 > CAMPAIGN 1420,630 > SELECT CAMPAIGN 1420,728 > USSR 2240,980 > first campaign
@@ -33,59 +40,13 @@ M1-M5 DONE (2026-10-02).
   Yes 1988,1136 > top bar EXIT 2400,22 > Yes 1988,1136.
 
 ## Game-folder changes
-- 2026-10-02 02:55 deploy: d3d11.dll sha256 7EE009219FBA (new file)
-- 2026-10-02 03:05 uninstall: removed d3d11.dll
-- 2026-10-02 03:05 uninstall check: folder matches the baseline (26 files)
-- 2026-10-02 12:11 deploy: d3d11.dll sha256 FC2E9BE9CB9B (new file)
-- 2026-10-02 12:11 deploy: dxgi.dll sha256 7B5835FE9F18 (new file)
-- 2026-10-02 12:15 uninstall: removed d3d11.dll
-- 2026-10-02 12:15 uninstall: removed dxgi.dll
-- 2026-10-02 12:15 uninstall check: folder matches the baseline (26 files)
-- 2026-10-02 12:26 deploy: d3d11.dll sha256 10B5A6EE919A (new file)
-- 2026-10-02 12:26 deploy: dxgi.dll sha256 FBF0679A1C16 (new file)
-- 2026-10-02 12:45 deploy: d3d11.dll sha256 36D988FF4FA7 (replaced our previous build)
-- 2026-10-02 12:45 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 12:48 deploy: d3d11.dll sha256 CDC2FC277A17 (replaced our previous build)
-- 2026-10-02 12:48 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 13:18 deploy: d3d11.dll sha256 2578D970D812 (replaced our previous build)
-- 2026-10-02 13:18 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 13:25 deploy: d3d11.dll sha256 E9CB204DDB61 (replaced our previous build)
-- 2026-10-02 13:25 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 13:31 deploy: d3d11.dll sha256 3D942AE62D77 (replaced our previous build)
-- 2026-10-02 13:31 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 13:35 deploy: d3d11.dll sha256 A253123E00B5 (replaced our previous build)
-- 2026-10-02 13:35 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 13:45 deploy: d3d11.dll sha256 7928404FF685 (replaced our previous build)
-- 2026-10-02 13:45 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 13:52 deploy: d3d11.dll sha256 B75D8D1BB7AE (replaced our previous build)
-- 2026-10-02 13:52 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 14:07 deploy: d3d11.dll sha256 F3375D4A32B6 (replaced our previous build)
-- 2026-10-02 14:07 deploy: dxgi.dll sha256 F1074AFD8656 (replaced our previous build)
-- 2026-10-02 14:12 uninstall: removed d3d11.dll
-- 2026-10-02 14:12 uninstall: removed dxgi.dll
-- 2026-10-02 14:12 uninstall check: folder matches the baseline (26 files)
-- 2026-10-02 14:13 deploy: d3d11.dll sha256 009E310D833E (new file)
-- 2026-10-02 14:13 deploy: dxgi.dll sha256 FD2866FB95DF (new file)
-- 2026-10-02 15:39 deploy: d3d11.dll sha256 B87BC088C44E (replaced our previous build)
-- 2026-10-02 15:39 deploy: dxgi.dll sha256 519B5418610C (replaced our previous build)
-- 2026-10-02 15:39 deploy: goh4k.ini sha256 9A90B6D0F702 (new file)
-- 2026-10-02 15:54 uninstall: removed d3d11.dll
-- 2026-10-02 15:54 uninstall: removed dxgi.dll
-- 2026-10-02 15:54 uninstall: removed goh4k.ini
-- 2026-10-02 15:54 uninstall: removed goh4k.log
-- 2026-10-02 15:54 uninstall check: folder matches the baseline (26 files)
-- 2026-10-02 16:00 deploy: d3d11.dll sha256 B87BC088C44E (new file)
-- 2026-10-02 16:00 deploy: dxgi.dll sha256 519B5418610C (new file)
-- 2026-10-02 16:00 deploy: goh4k.ini sha256 9A90B6D0F702 (new file)
-- 2026-10-02 16:25 deploy: d3d11.dll sha256 36A22782DFA2 (replaced our previous build)
-- 2026-10-02 16:25 deploy: dxgi.dll sha256 18E7C804F1FA (replaced our previous build)
-- 2026-10-02 16:25 deploy: goh4k.ini sha256 9A90B6D0F702 (replaced our previous build)
-- 2026-10-02 16:27 deploy: d3d11.dll sha256 E699A1A49DDD (replaced our previous build)
-- 2026-10-02 16:27 deploy: dxgi.dll sha256 87C26B5F6ED5 (replaced our previous build)
-- 2026-10-02 16:27 deploy: goh4k.ini sha256 9A90B6D0F702 (replaced our previous build)
-- 2026-10-02 16:34 deploy: d3d11.dll sha256 F8BC6A1097BE (replaced our previous build)
-- 2026-10-02 16:34 deploy: dxgi.dll sha256 D36F6917DECB (replaced our previous build)
-- 2026-10-02 16:34 deploy: goh4k.ini sha256 9A90B6D0F702 (replaced our previous build)
+Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-10-05 test builds were not kept.
+- Deploys of dev and release builds: 2026-10-02 40, 2026-10-04 15, 2026-10-05 24 file copies (d3d11.dll, dxgi.dll, Uninstall Goh4kMod.bat).
+- Every uninstall ended with "folder matches the baseline (26 files)": 2026-10-02 03:05, 2026-10-02 12:15, 2026-10-02 14:12, 2026-10-02 15:54, 2026-10-04 02:08, 2026-10-04 03:07, 2026-10-04 03:18.
+- Installed now (2.0 release, the same files as build\release\Goh4kMod-2.0.zip):
+  - 2026-10-05 12:09 deploy: d3d11.dll sha256 2F54ED25D0BF (replaced our previous build)
+  - 2026-10-05 12:09 deploy: dxgi.dll sha256 051C1351B0F7 (replaced our previous build)
+  - 2026-10-05 12:09 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -94,6 +55,8 @@ M1-M5 DONE (2026-10-02).
 - options.set: the resolution changed from 3840x2160 to 1920x1080, which the mod needs. To play without the
   mod, set 3840x2160 in the game's Options or restore scratch\settings-backup\options.set.2026-10-02.
 - scratch\shaderpak holds HLSL extracted read-only from shader.pak for analysis (gitignored). Delete freely.
+- scratch\interface-pak holds interface.pak extracted read-only for the font research (gitignored, 2078
+  files). Delete freely.
 
 ## Journal (newest at the bottom)
 ### 2026-10-02 Planning + Phase 0
@@ -311,3 +274,140 @@ M1-M5 DONE (2026-10-02).
 - NOTES.md: architecture, what was learned, and a playbook for fixing the mod after a game update.
 - Mishap: a mis-aimed scripted click opened "reset video settings to default?". I answered NO and the
   settings are intact.
+
+### 2026-10-04 Packaging for Nexus Mods
+- The zip ships `Uninstall Goh4kMod.bat` (src/package) instead of goh4k.ini. The release defaults
+  (Scale=2, Diagnostics=0) are the shipped settings; the DLL still reads a goh4k.ini if someone adds one.
+- The uninstaller runs from binaries\x64. It refuses outside the game folder or while the game runs. It
+  removes our DLLs (checked by ProductName), goh4k.ini/.log/-diagnostics, then itself; someone else's
+  d3d11.dll stays. Self-test section D covers this; deploy -Release and uninstall.cmd know the file.
+- README cut to 4K install/uninstall steps only. package.ps1 writes the text files with CRLF.
+- Verified in game (deploy.cmd -Release, no ini): log shows `config ... Scale=2` from the defaults,
+  `logical screen 1920x1080, real 3840x2160` and 2x cursors; main menu in captures/release-noini/menu.png;
+  a click on EXIT landed (exit.png) and YES closed the game.
+
+### 2026-10-04 Half-size mode list: built, verified, reverted
+- Tried skipping the manual 1920x1080 step by having the dxgi proxy report every display mode at half size.
+  It worked in game (captures/keep4k/), but it removed native 4K from Options and the game rewrote the
+  player's saved resolution. Ethan rejected it: the mod must not take away or change game options, and
+  no trade-off is worth it. All feature code is reverted to e338dd9; NOTES point 11 keeps what was learned.
+- Kept (net goods): the packaging work from earlier today, plus a fix for a flaky self-test. uninstall.ps1
+  archived deployed.txt as scratch\deployed-<seconds>.txt, so two uninstalls in one second collided
+  (exit 1, about 1 run in 5), and test runs wrote these records into the real scratch\. Now they go to
+  $RecordDir (the fake folder in test mode) with millisecond names. Repro loop 0/12 failures, self-test
+  5/5. The 23 leaked test records were deleted.
+- Restored build verified in game: 1360x768 startup, then logical 1920x1080 / real 3840x2160, full
+  stock resolution list in Options (revert-list.png). "Use desktop settings" also runs 2x with 1.0.
+- Ethan's options.set is back to `{mode "1920x1080"}` Fullscreen, set through the game's Options. It
+  matches the session-start backup except the `{mods "mod_3562631215"}` block (01 WAVE). The game dropped
+  that across restarts, stock included. The original file is in scratch/settings-backup/.
+- Saves unchanged (compared with scratch/settings-backup/saves-2026-10-04).
+
+### 2026-10-05 Permissions: no approvals except system-wide changes and publishing
+- Ethan asked for no approvals except system-wide installs. guard.sh no longer asks for deploy/uninstall.
+  Direct writes into the Steam install are now blocked instead of asked; deploy.cmd/uninstall.cmd stay the
+  way in. System-wide installs, registry and environment changes moved from deny to ask (settings.json
+  too, since a deny rule beats a hook's ask). git push / gh pr create still ask. CLAUDE.md updated.
+- Gotcha: the old guard matched any "Gates of Hell" path, which includes the profile under
+  My Games\gates of hell. Now it matches only "Call to Arms - Gates of Hell" (the install), and only the
+  command text, not the description. Copies count as writes only when the install path comes last.
+  28/28 sample tool calls give the expected decision.
+- The autoMode rules for ~/.claude/settings.json were blocked by the classifier as self-modification;
+  left for Ethan to add through /permissions.
+
+### 2026-10-05 Native-mode experiment (plan step 1): GO
+- Idea (Ethan: keep the selected resolution, UI sized automatically): the player keeps native resolution;
+  the proxy only tells the game its client area is native/k (k = real height / 1080) and converts the
+  mouse. Rendering, the mode list and options stay untouched. Dev-only `UiScale=1` with `Scale=1`.
+- Built: src/proxy/ratio.h (Down = floor, Up = ceil, so Down(Up(l)) == l; d==1 equals the 1.0 formulas;
+  proxytest checks 2/1, 4/3, 3/2, 8/3 exhaustively plus ClipCursor edges). Minimal lie: client size,
+  WM_SIZE, cursor and message coordinates, Screen/Client mapping, ClipCursor. Metrics, monitor info,
+  EnumDisplaySettings, window rect, WM_MOVE/WM_DISPLAYCHANGE and SetWindowPos stay real.
+- Evidence (captures/uiscale/, game set through its own Options):
+  - 4K, k=2: main menu, campaign, Options and mission list laid out exactly like 1080p x2 (30-menu4k,
+    51-campaign, 52-options). Mission 3D is native 4K full screen (72-cut, 73-gameplay); the HUD matches
+    the 1.0 capture of the same moment (20261002-133714-mission2xd). Box select works (74-select); a move
+    order's X lands at the right-click point (79-dest).
+  - 1440p, k=4/3 (the 4K monitor in a real 2560x1440 mode): Options (84-kept1440), mission list, HUD
+    (88-play1440), hover tooltip, box select and move X at the click point (91-move1440).
+  - Text sharpness equals 1.0 (crops side-sp / side-prof against 20261002-141401-final_menu).
+  - options.set: only `mode` changed, by my own Options choices. Saves byte-identical.
+- Gotchas (symptom -> cause -> fix):
+  1. Black screen after the Options confirm timed out back to 1080p -> the factor followed the buffer
+     height, which stays stale after a mode change; the game got WM_SIZE 960x540 and never resized ->
+     the factor follows the real client size (WM_SIZE, GetClientRect).
+  2. Labels 2x and clipped (Options, campaign) -> label surfaces drawn with the stale real-screen
+     viewport while the UI projection is logical (trace uiopt #37 #149 #152 #188) -> on targets smaller
+     than the screen, a full real-screen viewport is applied as the logical screen.
+  3. Mission 3D only in the top-left quarter, rest cream -> tone-map/glow passes set the client-size
+     1920x1080 viewport on 3840x2160 targets (trace cut1 #8480 #8484 #8491 #8500); stock 4K never does
+     that (20261002-122821-mission-trace) -> on screen-sized targets the logical full-screen viewport is
+     applied as the real screen. Scissors get the same two rules; `fix nouivp on` disables them.
+- Open: cursor still 32 px at native, Options' read-only "Current mode" line shows 1920x1080 at 4K
+  (cosmetic), alt-tab, fps comparison, and running alongside the 1.0 path (plan step 2a).
+
+### 2026-10-05 Native mode alongside the 1.0 path (plan step 2a)
+- `UiScale` is now read in release builds too (release default 1, dev default 0). Native mode runs
+  whenever the 2x path isn't active; with UiScale=0 every code path is the 1.0 one.
+- Cursor: built at the native factor. Whole factors use the 1.0 nearest neighbour; fractional ones use an
+  area filter in alpha (AND/XOR halves of mono masks scaled separately). Log: 32x32 -> 64x64 at 4K,
+  32x32 -> 43x43 at 1440p.
+- Gotcha: a switch to 1920x1080 from the game's own 2560x1440 exclusive mode ran natively instead of 2x
+  -> ScaleRequest compared 2x with the current mode (2560 wide) -> it now uses the monitor's desktop
+  mode (EnumDisplaySettings registry settings).
+- Verified with Scale=2 UiScale=1 (dev config now):
+  - proxytest passes in three configs (Scale=1/UiScale=1, Scale=2/UiScale=1 incl. the 2x -> native
+    hand-over at 2560x1440, Scale=2/UiScale=0). test-gamefolder.ps1 passes.
+  - Start at 1440p: native 4/3. Live switches in Options: 1440p -> 1080p gives 2x (ResizeTarget), 1080p
+    -> 4K gives native 2/1 (captures/uiscale/112, 115). Start at native 4K: native 2/1, 64 px cursors.
+  - Alt-tab at native 4K: same SetFullscreenState(0)/ResizeTarget sequence as 1.0, clicks correct.
+  - 1.0 regression: start at 1080p gives logical 1920x1080 / real 3840x2160 and 2x cursors; the menu
+    against 20261002-141401-final_menu differs only in animated sparks, the profile level and the
+    online counter (reg10-heat).
+- Known limit: after the live 1080p (2x) -> native switch, labels redrawn during the switch showed
+  half-size stale text until Options was reopened (116 vs 117).
+- End state: options.set and the whole profile byte-identical to the session-start backup
+  (scratch/settings-backup/profile-2026-10-05). The game folder has the 1.0 release again
+  (deploy.cmd -Release). README/Nexus text, the version bump and a 1.1 package wait for Ethan.
+
+### 2026-10-05 Research: genuinely higher-resolution UI text (plan step 3, report only)
+- Fonts are BMFont pages picked by name and size in inline format strings (gamelogic.pak registry
+  skins, layout XML). There is no scaled-resource naming anywhere.
+- `gui.scale_index` comes from an options key `video/scale_index` (absent from options.set). It only
+  scales two layout elements in PageGameMenu.xml. Its eGUI_Helper resource-pattern helpers have no
+  callers. Fonts never use it, and setting it would be a game-option change: not viable.
+- Exact 2x font pairs in the pak cover about 4% of font references, and none of the HUD (arial_hq).
+- Feasible, moderate risk, not built: 2x text surfaces plus font pages rebuilt at runtime at 2x
+  (same glyph boxes, so UVs and layout don't change), glyphs drawn with DirectWrite from installed
+  system fonts. Arial covers the HUD. Menu faces (pobeda, anka, open_sans) aren't installed and would
+  stay magnified. Unverified: whether the glyph and surface passes sample by normalized UV.
+
+### 2026-10-05 Version 2.0: native scaling only (Ethan: drop the 1.0 path, as unintrusive as possible)
+- Ethan's report on the first native build: "when in a menu prompt (like applying settings) the background
+  expands in a weird way". Cause: the blurred backdrop behind prompts is a 3840x2160 texture (trace
+  prompt1 #95-#96) that the UI draws as an image with coordinates of logical / texture size, so only its
+  top-left quarter showed, magnified. `fix nouivp on` didn't change it. Fix (rule 3): a UI draw (vertex
+  shader learnt from the label-surface draws, matched by bytecode id because the game creates it twice)
+  that samples a screen-sized render texture marks it; the game's full-screen pass into it then gets the
+  logical viewport. Verified: exit prompt at 4K (captures/v2/02), Options (04), keep-settings confirm at
+  1440p (05), in-mission game menu (09), release build (40).
+- Removed for 2.0: the whole 2x path (texture scaling, backbuffer wrapper and unwrap, cbpatch, copy-box,
+  scissor and ClearView scaling, ScaleRequest/ResizeTarget changes), the GetWindowRect,
+  GetSystemMetrics, GetMonitorInfoW, EnumDisplaySettingsW and SetWindowPos hooks (10 of 15 user32 hooks
+  remain), WM_MOVE/WM_DISPLAYCHANGE handling, and the `Scale` setting. Shader bytecode copies and texture
+  stats are now diagnostics-only; vertex shaders always get their 8-byte id. Forwarders regenerated
+  without unwrapping. Hand-written src/proxy (*.cpp/*.h): 3,349 lines in 1.0, 3,686 with both paths, 2,785 in 2.0.
+- Checks (dev build unless noted):
+  - proxytest passes: 6/6 runs after fixing a flaky dumprt check (deferred clears could become event #1), 3/3 on the final build;
+    test-gamefolder.ps1 PASSED with the 2.0 package.
+  - 4K: menus, prompt, Options, campaign, mission, HUD, box select, move orders as before.
+  - 1440p (game's own mode): mission list, HUD, game menu, edge pan (11-side), tooltip.
+  - Live Options switches 4K -> 1440p -> 1080p -> 4K: factor 2/1 -> 4/3 -> 1/1 -> 2/1, no black screen.
+  - Stock comparison with Wrap=0 (no mod code): a single minimap click doesn't move the camera there in
+    the stock game either (32-33-side), so not a mod issue.
+  - Release build at 4K: 151 FPS vs stock 152 FPS at the same mission moment (41-rel-play vs
+    32-stock-before); alt-tab then a squad-card click works (42); no diagnostics folder created.
+  - options.set: only `mode` differs from the session-start backup (now 3840x2160, Ethan's choice); saves
+    byte-identical.
+- 1.0 is kept: commit e338dd9, build\release\Goh4kMod-1.0\ and scratch\Goh4kMod-1.0-release.zip; the last
+  state with both paths is in scratch\src-hybrid-2026-10-05.

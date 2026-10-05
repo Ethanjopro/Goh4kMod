@@ -1,0 +1,44 @@
+Nexus Mods page text for Goh4kMod. Not shipped in the zip. Paste each part into the matching field.
+
+=== Name ===
+Goh4kMod - full resolution with 1080p UI
+
+=== Brief overview ===
+Play at your monitor's full resolution (1440p, 4K) with menus and HUD at their 1080p size. Nothing to set in the game. Single-player only: uninstall before playing multiplayer.
+
+=== Detailed description (BBCode) ===
+Above 1080p the game's interface shrinks: at 4K it's half the size it was meant to be. Goh4kMod keeps the interface at its 1080p size while the game renders at your monitor's own resolution, with the game's own settings and performance.
+
+[size=4][b]Requirements[/b][/size]
+[list]
+[*]A monitor above 1080p (tested at 3840x2160 and 2560x1440)
+[*]Steam version on Windows. Tested with game version 1.067.0.
+[/list]
+
+[size=4][b]Install[/b][/size]
+[list=1]
+[*]Close the game.
+[*]In Steam, right-click the game > Manage > Browse local files, and open [b]binaries\x64[/b].
+[*]Copy [b]d3d11.dll[/b], [b]dxgi.dll[/b] and [b]Uninstall Goh4kMod.bat[/b] from the zip into that folder.
+[*]Start the game and play at your monitor's resolution. Nothing to set.
+[/list]
+Updating from 1.0? Version 1.0 needed Resolution 1920x1080; set your monitor's resolution again in OPTIONS > VIDEO.
+
+[size=4][b]Uninstall - always before multiplayer[/b][/size]
+The game has its own anti-cheat, and this mod was tested in single-player only.
+[list=1]
+[*]Close the game.
+[*]Double-click [b]Uninstall Goh4kMod.bat[/b] in binaries\x64.
+[/list]
+
+[size=4][b]Good to know[/b][/size]
+[list]
+[*]No game files or settings are changed. The mod adds two DLLs that sit between the game and DirectX 11.
+[*]At 1920x1080 and below it changes nothing.
+[*]Not compatible with ReShade, DXVK or other mods that use d3d11.dll or dxgi.dll.
+[*]Something wrong after a game update? Uninstall and check here for a new version.
+[*]Reporting a bug? Attach [b]goh4k.log[/b] from binaries\x64.
+[/list]
+
+[size=4][b]Credits[/b][/size]
+MinHook by Tsuda Kageyu (BSD 2-Clause).

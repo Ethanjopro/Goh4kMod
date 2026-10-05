@@ -67,8 +67,8 @@ public:
     HRESULT STDMETHODCALLTYPE FinishCommandList(BOOL RestoreDeferredContextState,
                                                 ID3D11CommandList** ppCommandList) override;
 
-    // 2x state (context.cpp): the game's viewports/scissors are kept in logical units and re-applied scaled
-    // whenever the bound targets are scaled ones. Get* return the logical values.
+    // Native-scaling state (context.cpp): the game's viewports/scissors are kept as set and re-applied with
+    // the full-screen rules whenever the bound target changes class. Get* return the game's values.
     void STDMETHODCALLTYPE OMSetRenderTargets(UINT NumViews, ID3D11RenderTargetView* const* ppRenderTargetViews,
                                               ID3D11DepthStencilView* pDepthStencilView) override;
     void STDMETHODCALLTYPE OMSetRenderTargetsAndUnorderedAccessViews(
@@ -80,12 +80,9 @@ public:
     void STDMETHODCALLTYPE RSGetViewports(UINT* pNumViewports, D3D11_VIEWPORT* pViewports) override;
     void STDMETHODCALLTYPE RSGetScissorRects(UINT* pNumRects, D3D11_RECT* pRects) override;
     void STDMETHODCALLTYPE ClearState() override;
-    // Constant-buffer patches (cbpatch.cpp): which pixel shader is bound, and CB contents written by the game.
-    void STDMETHODCALLTYPE PSSetShader(ID3D11PixelShader* pPixelShader, ID3D11ClassInstance* const* ppClassInstances,
+    // Which vertex shader is bound: UI draws are recognised by it (context.cpp).
+    void STDMETHODCALLTYPE VSSetShader(ID3D11VertexShader* pVertexShader, ID3D11ClassInstance* const* ppClassInstances,
                                        UINT NumClassInstances) override;
-    HRESULT STDMETHODCALLTYPE Map(ID3D11Resource* pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
-                                  D3D11_MAPPED_SUBRESOURCE* pMappedResource) override;
-    void STDMETHODCALLTYPE Unmap(ID3D11Resource* pResource, UINT Subresource) override;
 
     int Level() const { return m_level; }
     bool IsImmediate() const { return m_immediate; }
@@ -98,27 +95,28 @@ public:
     int traceGen = -1;
 
 private:
-    void TargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv,
-                        ID3D11UnorderedAccessView* const* uavs, UINT numUavs);
-    void ApplyViewports();
-    void ApplyScissors();
     void ResetTrackedState();
+    void UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv);
+    void UiApplyViewports();
+    void UiApplyScissors();
+    void UiBeforeDraw();
 
     WrappedDevice* m_device;
     bool m_immediate;
     int m_level = 0;  // highest ID3D11DeviceContextN the real object supports
     int m_id = 0;     // 0 = immediate, 1.. = deferred contexts in creation order
 
-    D3D11_VIEWPORT m_vp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+    D3D11_VIEWPORT m_vp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};  // as the game set them
     UINT m_numVp = 0;
     D3D11_RECT m_sc[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
     UINT m_numSc = 0;
-    UINT m_targetScale = 1;   // scale of the bound render/depth targets
-    UINT m_targetLogicalW = 0, m_targetLogicalH = 0;
-    UINT m_appliedScale = 1;  // scale the real viewports/scissors were last set with
-    int m_psPatch = -1;       // cbpatch index of the bound pixel shader
-    ID3D11Resource* m_mappedCb = nullptr;  // a tracked constant buffer currently mapped by the game
-    const void* m_mappedCbData = nullptr;
+    int m_uiTarget = 0;            // bound target: 0 other, 1 below the real screen (UI surface), 2 exactly it
+    bool m_uiVpSwapped = false;    // a full-screen viewport is applied swapped right now
+    bool m_uiVpFromHbao = false;   // the viewports / scissors were set by HBAO+
+    bool m_uiScFromHbao = false;
+    ID3D11VertexShader* m_vs = nullptr;  // bound vertex shader (no reference)
+    uint64_t m_vsHash = 0;               // its id (diag.h ShaderHash), looked up on first need after a bind
+    bool m_vsHashKnown = false;
 };
 
 class WrappedDevice final : public Fwd_ID3D11Device5 {
@@ -138,20 +136,12 @@ public:
     HRESULT STDMETHODCALLTYPE CreateDeferredContext2(UINT ContextFlags, ID3D11DeviceContext2** ppDeferredContext) override;
     HRESULT STDMETHODCALLTYPE CreateDeferredContext3(UINT ContextFlags, ID3D11DeviceContext3** ppDeferredContext) override;
 
-    // Resource and shader creation: recorded for stats/trace (device.cpp). M3 adds the 2x rules here.
+    // Resource and shader creation: recorded for stats/trace when diagnostics are on (device.cpp).
     HRESULT STDMETHODCALLTYPE CreateTexture2D(const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData,
                                               ID3D11Texture2D** ppTexture2D) override;
     HRESULT STDMETHODCALLTYPE CreateTexture2D1(const D3D11_TEXTURE2D_DESC1* pDesc1,
                                                const D3D11_SUBRESOURCE_DATA* pInitialData,
                                                ID3D11Texture2D1** ppTexture2D) override;
-    HRESULT STDMETHODCALLTYPE CreateRenderTargetView(ID3D11Resource* pResource, const D3D11_RENDER_TARGET_VIEW_DESC* pDesc,
-                                                     ID3D11RenderTargetView** ppRTView) override;
-    HRESULT STDMETHODCALLTYPE CreateRenderTargetView1(ID3D11Resource* pResource,
-                                                      const D3D11_RENDER_TARGET_VIEW_DESC1* pDesc1,
-                                                      ID3D11RenderTargetView1** ppRTView1) override;
-    HRESULT STDMETHODCALLTYPE CreateDepthStencilView(ID3D11Resource* pResource,
-                                                     const D3D11_DEPTH_STENCIL_VIEW_DESC* pDesc,
-                                                     ID3D11DepthStencilView** ppDepthStencilView) override;
     HRESULT STDMETHODCALLTYPE CreateVertexShader(const void* pShaderBytecode, SIZE_T BytecodeLength,
                                                  ID3D11ClassLinkage* pClassLinkage,
                                                  ID3D11VertexShader** ppVertexShader) override;
@@ -189,15 +179,12 @@ private:
 
 class WrappedSwapChain final : public Fwd_IDXGISwapChain4 {
 public:
-    WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device, bool scaled);
+    WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override;
     ULONG STDMETHODCALLTYPE AddRef() override;
     ULONG STDMETHODCALLTYPE Release() override;
 
     HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void** ppDevice) override;
-    HRESULT STDMETHODCALLTYPE GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) override;
-    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc) override;    // logical size in 2x mode
-    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* pDesc) override;  // logical size in 2x mode
     HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags) override;
     HRESULT STDMETHODCALLTYPE Present1(UINT SyncInterval, UINT PresentFlags,
                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters) override;
@@ -215,24 +202,15 @@ private:
     void AfterPresent(HRESULT hr, UINT flags);
     void WriteStatus(ULONGLONG now);
     void LogState(const char* why);
-    void UpdateLogicalSize();
-    void SetScaled(bool scaled, const char* why);
+    void UpdateUiScale(const char* why);
 
-    static const UINT kMaxBuffers = 8;
     WrappedDevice* m_device;
-    bool m_scaled = false;  // real buffers are Scale x the size the game believes
-    class WrappedTexture2D* m_buffers[kMaxBuffers] = {};  // 2x mode: what GetBuffer hands the game
     int m_level = 0;  // highest IDXGISwapChainN the real object supports
     LONG64 m_frames = 0;
     LONG64 m_framesAtStatus = 0;
     ULONGLONG m_statusTick = 0;
     double m_fps = 0;
     int m_colorSpace = -1;
-    bool m_loggedBuffer = false;
 };
-
-// 2x mode: doubles a swapchain/mode size the game asked for (in place). False if not scaling or the
-// request looks real-sized already.
-bool ScaleRequest(HWND hwnd, UINT* w, UINT* h);
 
 }  // namespace goh4k

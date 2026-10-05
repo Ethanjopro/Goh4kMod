@@ -41,6 +41,7 @@ void DiagAfterPresent(IDXGISwapChain* realSwapChain, WrappedDevice* device, LONG
 // Registries filled by the device wrapper.
 void RegisterShader(ID3D11DeviceChild* shader, const void* bytecode, SIZE_T length, char kind);
 std::string ShaderId(ID3D11DeviceChild* shader);  // 16 hex digits, "-" for none
+uint64_t ShaderHash(ID3D11DeviceChild* shader);   // the same id as a number; 0 if the shader isn't tagged
 void RecordTextureCreate(const D3D11_TEXTURE2D_DESC& d, bool initialData);
 std::string ResTag(ID3D11Resource* r);           // e.g. r12:3840x2160:f87:x8 (stable id per resource)
 std::string ViewTag(ID3D11View* v);              // ResTag of the view's resource
