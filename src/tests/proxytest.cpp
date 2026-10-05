@@ -280,56 +280,86 @@ int main() {
     wchar_t ini[MAX_PATH];
     swprintf_s(ini, L"%s\\config\\goh4k.ini", root);
 
-    // 5b) Native scaling checks (config\goh4k.ini UiScale=1, the default): a window with a real 2560x1440 client
-    // gives 4/3. The client size and cursor are divided by it; buffers, textures, screen metrics and the window
-    // rect stay real.
+    // 5b) Native scaling checks (config\goh4k.ini UiScale=1, the default). A bordered 2560x1440 window doesn't
+    // cover its monitor, so nothing is converted (the game would save the logical size as its resolution). A
+    // borderless window covering the monitor gets k = monitor height / 1080: the client size and the cursor are
+    // divided by it around the client origin; buffers, textures, screen metrics and the window rect stay real.
     int uiScale = GetPrivateProfileIntW(L"proxy", L"UiScale", 1, ini);
     if (uiScale == 1) {
+        HDC dc = GetDC(nullptr);
+        int realW = GetDeviceCaps(dc, HORZRES), realH = GetDeviceCaps(dc, VERTRES);
+        ReleaseDC(nullptr, dc);
+        // Windowed: pass-through.
+        RECT outer = {0, 0, 2560, 1440};  // SetWindowPos isn't hooked
+        AdjustWindowRectExForDpi(&outer, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd));
+        SetWindowPos(hwnd, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOZORDER | SWP_NOACTIVATE);
         hr = sc->ResizeBuffers(0, 2560, 1440, DXGI_FORMAT_UNKNOWN, 0);
         CHECK(SUCCEEDED(hr), "ui-scale: ResizeBuffers to 2560x1440 (0x%08lx)", hr);
-        D3D11_TEXTURE2D_DESC td = {2560, 1440, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+        RECT cr = {};
+        GetClientRect(hwnd, &cr);
+        CHECK(cr.right == 2560 && cr.bottom == 1440, "ui-scale: a bordered 2560x1440 window isn't scaled (%ldx%ld)", cr.right,
+              cr.bottom);
+        // Covering the monitor: scaled.
+        SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP);
+        SetWindowPos(hwnd, nullptr, 0, 0, realW, realH, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        hr = sc->ResizeBuffers(0, (UINT)realW, (UINT)realH, DXGI_FORMAT_UNKNOWN, 0);
+        CHECK(SUCCEEDED(hr), "ui-scale: ResizeBuffers to the monitor's %dx%d (0x%08lx)", realW, realH, hr);
+        goh4k::Ratio k = goh4k::RatioForHeight((uint32_t)realH, 1080);
+        long lw = goh4k::RatioDown(realW, k), lh = goh4k::RatioDown(realH, k);
+        D3D11_TEXTURE2D_DESC td = {(UINT)realW, (UINT)realH, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
                                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0, 0};
         ID3D11Texture2D* t = nullptr;
         dev->CreateTexture2D(&td, nullptr, &t);
         D3D11_TEXTURE2D_DESC o = {};
         if (t) t->GetDesc(&o), t->Release();
-        CHECK(o.Width == 2560 && o.Height == 1440, "ui-scale: a screen-size render target is created as asked (%ux%u)",
+        CHECK(o.Width == (UINT)realW && o.Height == (UINT)realH, "ui-scale: a screen-size render target is created as asked (%ux%u)",
               o.Width, o.Height);
-        D3D11_VIEWPORT vp = {0, 0, 1920, 1080, 0, 1}, back = {};
+        D3D11_VIEWPORT vp = {0, 0, (float)lw, (float)lh, 0, 1}, back = {};
         ctx->RSSetViewports(1, &vp);
         UINT nvp = 1;
         ctx->RSGetViewports(&nvp, &back);
-        CHECK(nvp == 1 && back.Width == 1920 && back.Height == 1080, "ui-scale: RSGetViewports returns the game's own %gx%g",
+        CHECK(nvp == 1 && back.Width == (float)lw && back.Height == (float)lh, "ui-scale: RSGetViewports returns the game's own %gx%g",
               back.Width, back.Height);
-        RECT outer = {0, 0, 2560, 1440};  // SetWindowPos isn't hooked
-        AdjustWindowRectExForDpi(&outer, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd));
-        SetWindowPos(hwnd, nullptr, 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOZORDER | SWP_NOACTIVATE);
         DXGI_SWAP_CHAIN_DESC d = {};
         sc->GetDesc(&d);
-        CHECK(d.BufferDesc.Width == 2560 && d.BufferDesc.Height == 1440, "ui-scale: GetDesc stays real 2560x1440 (%ux%u)",
+        CHECK(d.BufferDesc.Width == (UINT)realW && d.BufferDesc.Height == (UINT)realH, "ui-scale: GetDesc stays real (%ux%u)",
               d.BufferDesc.Width, d.BufferDesc.Height);
-        WINDOWINFO wi = {sizeof(wi)};
-        GetWindowInfo(hwnd, &wi);  // not hooked: the real client rect
-        long realCw = wi.rcClient.right - wi.rcClient.left, realCh = wi.rcClient.bottom - wi.rcClient.top;
-        RECT cr = {};
         GetClientRect(hwnd, &cr);
-        CHECK(realCw == 2560 && realCh == 1440 && cr.right == 1920 && cr.bottom == 1080,
-              "ui-scale: GetClientRect %ldx%ld for the real %ldx%ld", cr.right, cr.bottom, realCw, realCh);
-        HDC dc = GetDC(nullptr);
-        int realW = GetDeviceCaps(dc, HORZRES);
-        ReleaseDC(nullptr, dc);
+        CHECK(cr.right == lw && cr.bottom == lh, "ui-scale: GetClientRect %ldx%ld for the real %dx%d (k %lld/%lld)", cr.right,
+              cr.bottom, realW, realH, k.n, k.d);
         CHECK(GetSystemMetrics(SM_CXSCREEN) == realW, "ui-scale: GetSystemMetrics(SM_CXSCREEN) stays real (%d, %d)",
               GetSystemMetrics(SM_CXSCREEN), realW);
+        WINDOWINFO wi = {sizeof(wi)};
+        GetWindowInfo(hwnd, &wi);  // not hooked
         RECT wr = {};
         GetWindowRect(hwnd, &wr);
-        CHECK(wr.right - wr.left == wi.rcWindow.right - wi.rcWindow.left, "ui-scale: GetWindowRect stays real (%ld wide)",
-              wr.right - wr.left);
+        CHECK(wr.right - wr.left == realW, "ui-scale: GetWindowRect stays real (%ld wide)", wr.right - wr.left);
+        long ox = wi.rcClient.left, oy = wi.rcClient.top;
         CURSORINFO ci = {sizeof(ci)};
         GetCursorInfo(&ci);  // not hooked
         POINT p = {};
         GetCursorPos(&p);
-        long want = (long)goh4k::FloorDiv((int64_t)ci.ptScreenPos.x * 3, 4);
-        CHECK(p.x >= want - 1 && p.x <= want + 1, "ui-scale: GetCursorPos x %ld is 3/4 of the real %ld", p.x, ci.ptScreenPos.x);
+        long want = ox + goh4k::RatioDown(ci.ptScreenPos.x - ox, k);
+        CHECK(p.x >= want - 1 && p.x <= want + 1, "ui-scale: GetCursorPos x %ld is the real %ld divided by k around the client origin %ld",
+              p.x, ci.ptScreenPos.x, ox);
+        POINT c0 = {0, 0}, c1 = {lw - 1, lh - 1};
+        ClientToScreen(hwnd, &c0);
+        ClientToScreen(hwnd, &c1);
+        CHECK(c0.x == ox && c0.y == oy && c1.x == ox + lw - 1 && c1.y == oy + lh - 1,
+              "ui-scale: ClientToScreen puts the client at its real origin %ld,%ld with logical extent (%ld,%ld)-(%ld,%ld)", ox,
+              oy, c0.x, c0.y, c1.x, c1.y);
+        POINT s = c1;
+        ScreenToClient(hwnd, &s);
+        CHECK(s.x == lw - 1 && s.y == lh - 1, "ui-scale: ScreenToClient(ClientToScreen(p)) == p (%ld,%ld)", s.x, s.y);
+        POINT m[2] = {{0, 0}, {lw - 1, lh - 1}};
+        int off = MapWindowPoints(hwnd, nullptr, m, 2);
+        CHECK(m[0].x == c0.x && m[1].y == c1.y && (SHORT)LOWORD(off) == ox && (SHORT)HIWORD(off) == oy,
+              "ui-scale: MapWindowPoints to the screen matches ClientToScreen (offset %d,%d)", (SHORT)LOWORD(off),
+              (SHORT)HIWORD(off));
+        RECT dr = {};
+        GetClientRect(GetDesktopWindow(), &dr);
+        CHECK(dr.right == realW, "ui-scale: GetClientRect of the desktop stays real (%ld)", dr.right);
+        if (k.n == k.d) printf("note  this monitor is 1080p or less, so the scaled checks above saw k = 1\n");
     }
 
     // 6) Release everything; the device must reach 0.

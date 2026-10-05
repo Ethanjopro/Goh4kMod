@@ -40,7 +40,7 @@ WineHooks HD mode has shown the trick works in this game.
   - resource/shader.pak is a zip:
     - ~5.7k precompiled shaders (shader/cache/dx11.0/<md5>.pso/.vso: a defines header plus DXBC with
       RDEF reflection);
-    - ~34 HLSL post-process sources the game compiles itself (postprocess/ssao/*, dof, hdrâ€¦);
+    - ~34 HLSL post-process sources the game compiles itself (postprocess/ssao/*, dof, hdr…);
     - soft_intersection.inc.
   - soft_intersection.inc and SSAO.hlsl turn SV_Position into UV by dividing by
     `depthTexture.GetDimensions()`, not by a constant. Size-matched 2x scaling should therefore stay
@@ -64,7 +64,7 @@ WineHooks HD mode has shown the trick works in this game.
   come from D3D11CreateDeviceAndSwapChain. Every other export is forwarded to System32\d3d11.dll through
   ml64 jump stubs generated from `dumpbin /exports`. A dxgi.dll proxy is added only if M1's log shows the
   swapchain being created through CreateDXGIFactory.
-- Interception: COM wrappers for Device(â†’5), Context(â†’4, deferred contexts too) and SwapChain(â†’4). There
+- Interception: COM wrappers for Device(→5), Context(→4, deferred contexts too) and SwapChain(→4). There
   are no vtable patches. The per-resource scale is stored with SetPrivateData on the real texture.
 - Config and output stay in the project. The DLL has the project path compiled in. It reads
   config/goh4k.ini when it starts, writes logs to scratch/logs/ and writes captures to captures/. Only
@@ -75,7 +75,7 @@ WineHooks HD mode has shown the trick works in this game.
   coordinates. The game's exe and memory are never touched.
 - 2x rules (start here, then adjust from the evidence):
   - Scale a Texture2D 2x when it has no initial data, has an RT, DS or UAV bind flag (or is a DEFAULT
-    copy target), and is screen-sized or a screen fraction (1/2, 1/4â€¦ with either rounding).
+    copy target), and is screen-sized or a screen fraction (1/2, 1/4… with either rounding).
   - Square, array and initial-data textures stay as they are.
   - Viewports and scissors are stored in logical units and scaled at draw time when a scaled target is
     bound. A guard stops double scaling.
@@ -208,8 +208,9 @@ WineHooks HD mode has shown the trick works in this game.
 ## How to use (2.0)
 - **Install:** run `deploy.cmd` (dev build) or `deploy.cmd -Release` (the packaged zip). It copies the DLLs
   into the game's binaries\x64 and records the change in LOG.md.
-- **Game settings:** none. Play at the monitor's own resolution; the UI keeps its 1080p size and the 3D
-  renders natively. At 1920x1080 and below the mod changes nothing.
+- **Game settings:** none. Play at the monitor's own resolution, Fullscreen or Windowed borderless; the UI
+  keeps its 1080p size and the 3D renders natively. In a smaller window, and at 1920x1080 and below, the
+  mod changes nothing.
 - **Before multiplayer:** run `uninstall.cmd` (double-clicking is fine). It removes the DLLs and checks the
   folder against the original baseline. No setting needs changing back.
 - **Settings:** config\goh4k.ini in this folder (no redeploy needed; restart the game after editing):
@@ -217,7 +218,7 @@ WineHooks HD mode has shown the trick works in this game.
   - Wrap=0 forwards the DLL calls only and does nothing else.
 - **Diagnostics:** write commands to captures\request.txt while the game runs: `capture <tag>`,
   `trace <tag>`, `dumprt <event>|ps:<id> [tag] [ds] [cb]`, `stats`, `dumpshader <id>`,
-  `fix nouivp|nocursorscale on|off`. Ctrl+Shift+F11 also captures. Results go to captures\, and the log
+  `fix nouivp|nocursorscale on|off` (fixes only work with diagnostics on). Ctrl+Shift+F11 also captures. Results go to captures\, and the log
   goes to scratch\logs\.
 - **After a game update:** if Steam's file check runs, it doesn't remove our added DLLs. If the game
   misbehaves after an update, run uninstall.cmd, then rebuild and deploy.

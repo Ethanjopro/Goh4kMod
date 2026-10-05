@@ -652,6 +652,7 @@ void RecordTextureCreate(const D3D11_TEXTURE2D_DESC& d, bool initialData) {
 }
 
 bool FixOn(const char* name) {
+    if (!g_cfg.diagnostics) return false;  // fixes are set through request.txt, which needs diagnostics
     std::lock_guard<std::mutex> lock(g_fixMutex);
     auto it = g_fixes.find(name);
     return it != g_fixes.end() && it->second;

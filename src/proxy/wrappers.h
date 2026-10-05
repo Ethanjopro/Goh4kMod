@@ -80,9 +80,12 @@ public:
     void STDMETHODCALLTYPE RSGetViewports(UINT* pNumViewports, D3D11_VIEWPORT* pViewports) override;
     void STDMETHODCALLTYPE RSGetScissorRects(UINT* pNumRects, D3D11_RECT* pRects) override;
     void STDMETHODCALLTYPE ClearState() override;
-    // Which vertex shader is bound: UI draws are recognised by it (context.cpp).
+    // Which vertex shader and pixel-shader texture 0 are bound: UI draws and the images they draw are
+    // recognised by them (context.cpp).
     void STDMETHODCALLTYPE VSSetShader(ID3D11VertexShader* pVertexShader, ID3D11ClassInstance* const* ppClassInstances,
                                        UINT NumClassInstances) override;
+    void STDMETHODCALLTYPE PSSetShaderResources(UINT StartSlot, UINT NumViews,
+                                                ID3D11ShaderResourceView* const* ppShaderResourceViews) override;
 
     int Level() const { return m_level; }
     bool IsImmediate() const { return m_immediate; }
@@ -110,13 +113,14 @@ private:
     UINT m_numVp = 0;
     D3D11_RECT m_sc[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
     UINT m_numSc = 0;
-    int m_uiTarget = 0;            // bound target: 0 other, 1 below the real screen (UI surface), 2 exactly it
+    int m_uiTarget = 0;            // bound target class (context.cpp UiTarget)
     bool m_uiVpSwapped = false;    // a full-screen viewport is applied swapped right now
-    bool m_uiVpFromHbao = false;   // the viewports / scissors were set by HBAO+
-    bool m_uiScFromHbao = false;
     ID3D11VertexShader* m_vs = nullptr;  // bound vertex shader (no reference)
     uint64_t m_vsHash = 0;               // its id (diag.h ShaderHash), looked up on first need after a bind
     bool m_vsHashKnown = false;
+    ID3D11ShaderResourceView* m_ps0 = nullptr;  // bound pixel-shader texture 0 (no reference)
+    bool m_ps0Known = false;                    // m_ps0Copy is up to date for it
+    ID3D11Resource* m_ps0Copy = nullptr;        // its texture, if screen-sized and a render target
 };
 
 class WrappedDevice final : public Fwd_ID3D11Device5 {
@@ -203,6 +207,7 @@ private:
     void WriteStatus(ULONGLONG now);
     void LogState(const char* why);
     void UpdateUiScale(const char* why);
+    void ResyncAfterModeChange();
 
     WrappedDevice* m_device;
     int m_level = 0;  // highest IDXGISwapChainN the real object supports

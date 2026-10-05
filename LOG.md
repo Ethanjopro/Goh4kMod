@@ -1,7 +1,7 @@
 # Goh4kMod log
 
 ## Status
-1.0 (M1-M5, 2026-10-02/04) replaced by 2.0 native scaling (2026-10-05, not committed yet).
+1.0 (M1-M5, 2026-10-02/04, commit e338dd9) replaced by 2.0 native scaling (2026-10-05, commit f08b58d).
 - Release 2.0 is INSTALLED, the same files as build\release\Goh4kMod-2.0.zip: d3d11.dll, dxgi.dll and
   Uninstall Goh4kMod.bat in binaries\x64.
 - The game is set to 3840x2160 Fullscreen (Ethan's choice for 2.0); the UI keeps its 1080p size.
@@ -47,13 +47,23 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-
   - 2026-10-05 12:09 deploy: d3d11.dll sha256 2F54ED25D0BF (replaced our previous build)
   - 2026-10-05 12:09 deploy: dxgi.dll sha256 051C1351B0F7 (replaced our previous build)
   - 2026-10-05 12:09 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
+- 2026-10-05 13:04 deploy: d3d11.dll sha256 C43FB1999DE3 (replaced our previous build)
+- 2026-10-05 13:04 deploy: dxgi.dll sha256 48B55676D70C (replaced our previous build)
+- 2026-10-05 13:13 deploy: d3d11.dll sha256 273188C649DD (replaced our previous build)
+- 2026-10-05 13:13 deploy: dxgi.dll sha256 25EBD7089CE9 (replaced our previous build)
+- 2026-10-05 13:29 deploy: d3d11.dll sha256 927ED57FDA24 (replaced our previous build)
+- 2026-10-05 13:29 deploy: dxgi.dll sha256 04BB14F603EE (replaced our previous build)
+- 2026-10-05 13:36 deploy: d3d11.dll sha256 DF6AE6A56987 (replaced our previous build)
+- 2026-10-05 13:36 deploy: dxgi.dll sha256 F6DEB26B7391 (replaced our previous build)
+- 2026-10-05 13:36 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
   campaign, campaign\conquest 4.sav (Germany vs USSR, one retreat). Delete it freely. Ethan's own saves and
   campaigns are byte-identical to scratch\profile-backup-2026-10-02.
-- options.set: the resolution changed from 3840x2160 to 1920x1080, which the mod needs. To play without the
-  mod, set 3840x2160 in the game's Options or restore scratch\settings-backup\options.set.2026-10-02.
+- options.set: 1.0 needed 1920x1080; 2.0 needs no setting. Since 2026-10-05 it is back at 3840x2160 (set
+  through the game's Options). Older copies: scratch\settings-backup\ (options.set.2026-10-02 and
+  profile-2026-10-05).
 - scratch\shaderpak holds HLSL extracted read-only from shader.pak for analysis (gitignored). Delete freely.
 - scratch\interface-pak holds interface.pak extracted read-only for the font research (gitignored, 2078
   files). Delete freely.
@@ -411,3 +421,40 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-
     byte-identical.
 - 1.0 is kept: commit e338dd9, build\release\Goh4kMod-1.0\ and scratch\Goh4kMod-1.0-release.zip; the last
   state with both paths is in scratch\src-hybrid-2026-10-05.
+
+### 2026-10-05 Code-review fixes for 2.0 (all 15 findings)
+- Review of f08b58d: 15 findings. All addressed; the in-game ones were checked in game first.
+- **Found while testing (not in the review): windowed mode changed the player's setting.** In a window
+  smaller than its monitor the game takes the client size as its resolution and saves it: a 2560x1440
+  window was saved as `mode`/`custom_mode` "1920x1080". Fix: only a client covering its whole monitor
+  (fullscreen, borderless) is scaled; smaller windows get k = 1. Verified: windowed 2560x1440 now saves
+  2560x1440, also after dragging the window; borderless and fullscreen save only the chosen mode; exclusive
+  1440p is still 4/3. Ethan's custom_mode (1280x720, not selectable in Options) and settings.set window
+  location were restored from the session-start backup by hand after the tests.
+- **Found while testing: borderless -> fullscreen at the desktop size left the UI at native size** with a
+  stale copy in the top-left (captures/v2/59): no WM_SIZE, so the game laid out from its mode. Fix: a
+  WM_SIZE resync after the game's own SetFullscreenState/ResizeTarget (at most one queued).
+- Review findings:
+  - Rules keyed off the client size -> they now use the swapchain buffer size.
+  - Rule 3 marked textures forever -> the mark lasts 2 frames and is refreshed while the UI draws it.
+  - Screen points scaled around 0,0 while window rect/WM_MOVE are real -> screen points now scale around
+    the client's real screen origin (tracked from WM_MOVE/WM_SIZE). Verified in game in windowed mode at
+    origin 811,446, menus through to a mission (before windowed scaling was switched off); it now matters
+    for a fullscreen/borderless game on a secondary monitor (untested: one monitor here).
+    In no mode did the game call ClipCursor or SetCursorPos (dev-build logging), camera rotation included.
+  - HBAO+ restore exemption -> exemption removed after an A/B showed no difference (hb-heats).
+  - GetClientRect converted any window -> only the game window; desktop stays real (proxytest).
+  - Partial scissors -> 114 traces incl. scrolled Options never enable scissoring; the list clips
+    correctly (53-crop). Left as full-screen-only, documented.
+  - Three separate atomics -> one 64-bit state (client size, buffer size, covers flag) plus a generation.
+  - UI-VS table of 4 never evicted, duplicates on races -> 8 slots, duplicate check, logged when full.
+  - Per-bind/per-draw COM calls -> target class cached on the view per state generation; slot-0 texture
+    checked once per PSSetShaderResources; FixOn returns at once without diagnostics; notes are atomics.
+  - Two cursor scalers -> one box filter (exact nearest neighbour at whole factors).
+  - PLAN.md mojibake restored from 1.0 (only the How-to-use section differs now); stale LOG lines fixed.
+- Checks: proxytest passes (bordered 2560x1440 window passes through, monitor-sized one scaled 2/1,
+  origin-relative mapping, desktop rect real); test-gamefolder.ps1 PASSED. In game (dev, then release):
+  4K prompt/menus/mission/rotation, borderless, windowed at an offset origin through to a mission,
+  exclusive 1440p. Release build: 150 FPS (stock 152 at the same moment), prompt and HUD correct.
+- drive.exe gained `mdrag` and `mrotate` (middle-button camera rotation).
+- Profile at the end: identical to the session-start backup except Ethan's own `mode "3840x2160"`.

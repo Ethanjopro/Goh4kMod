@@ -4,6 +4,7 @@
 // Coordinates are physical screen pixels (the process is per-monitor DPI aware).
 //   snap <file.png> [divisor]   desktop duplication of the primary monitor, box-downscaled (default /4)
 //   move x y | click x y [right] | dclick x y | drag x1 y1 x2 y2 | wheel n | key name[+name...] | wait ms
+//   mdrag x1 y1 x2 y2           drag with the middle button; mrotate dx dy steps: relative moves, middle held
 //   focus pid                   bring that process's main window to the foreground
 //   fg                          print the foreground window's pid, title and size, and the cursor position
 //   cursor                      print the current hardware cursor's bitmap size and hotspot
@@ -55,17 +56,29 @@ static void Click(int x, int y, bool right, int count) {
     }
 }
 
-static void Drag(int x1, int y1, int x2, int y2) {
+static void Drag(int x1, int y1, int x2, int y2, bool middle = false) {
     MoveTo(x1, y1);
     Sleep(80);
-    SendMouse(MOUSEEVENTF_LEFTDOWN);
+    SendMouse(middle ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_LEFTDOWN);
     Sleep(120);
     for (int i = 1; i <= 12; ++i) {  // move in steps so the UI sees a drag
         MoveTo(x1 + (x2 - x1) * i / 12, y1 + (y2 - y1) * i / 12);
         Sleep(25);
     }
     Sleep(120);
-    SendMouse(MOUSEEVENTF_LEFTUP);
+    SendMouse(middle ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_LEFTUP);
+}
+
+// Relative motion with the middle button held (camera rotation in the game), in steps of dx,dy.
+static void MiddleRotate(int dx, int dy, int steps) {
+    SendMouse(MOUSEEVENTF_MIDDLEDOWN);
+    Sleep(120);
+    for (int i = 0; i < steps; ++i) {
+        SendMouse(MOUSEEVENTF_MOVE, dx, dy);
+        Sleep(25);
+    }
+    Sleep(120);
+    SendMouse(MOUSEEVENTF_MIDDLEUP);
 }
 
 static WORD VkFromName(const std::string& n) {
@@ -396,6 +409,12 @@ int wmain(int argc, wchar_t** argv) {
         } else if (cmd == L"drag") {
             Drag(num(i + 1), num(i + 2), num(i + 3), num(i + 4));
             i += 5;
+        } else if (cmd == L"mdrag") {
+            Drag(num(i + 1), num(i + 2), num(i + 3), num(i + 4), true);
+            i += 5;
+        } else if (cmd == L"mrotate") {
+            MiddleRotate(num(i + 1), num(i + 2), num(i + 3));
+            i += 4;
         } else if (cmd == L"wheel") {
             SendMouse(MOUSEEVENTF_WHEEL, 0, 0, (DWORD)(num(i + 1) * WHEEL_DELTA));
             i += 2;

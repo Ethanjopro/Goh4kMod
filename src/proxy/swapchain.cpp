@@ -32,14 +32,26 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) 
     }
 }
 
-// The factor follows the window's real client size (scale.h). Called from our module, so GetClientRect isn't
-// converted.
+// The factor follows the window's real client size, the full-screen rules its buffer size (scale.h). Only
+// the game window's swapchain counts. Called from our module, so GetClientRect isn't converted.
 void WrappedSwapChain::UpdateUiScale(const char* why) {
     if (!UiScaleConfigured()) return;
     DXGI_SWAP_CHAIN_DESC d = {};
     m_real->GetDesc(&d);
+    if (!IsGameWindow(d.OutputWindow)) return;
+    SetUiBuffer(d.BufferDesc.Width, d.BufferDesc.Height);
     RECT r = {};
-    if (GetClientRect(d.OutputWindow, &r) && !IsIconic(d.OutputWindow)) SetUiScaleFromClient((UINT)r.right, (UINT)r.bottom, why);
+    if (GetClientRect(d.OutputWindow, &r) && !IsIconic(d.OutputWindow))
+        SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(d.OutputWindow, r.right, r.bottom), why);
+}
+
+// The game's own mode change (input.h NotifyGameWindowSizeChanged). Not after ResizeBuffers: the game calls
+// that in answer to WM_SIZE, so a resync there would loop.
+void WrappedSwapChain::ResyncAfterModeChange() {
+    if (!UiScaleActive()) return;
+    DXGI_SWAP_CHAIN_DESC d = {};
+    m_real->GetDesc(&d);
+    if (IsGameWindow(d.OutputWindow)) NotifyGameWindowSizeChanged();
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::QueryInterface(REFIID riid, void** ppv) {
@@ -146,6 +158,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::SetFullscreenState(BOOL Fullscreen, 
     Log("SetFullscreenState(%d, output=%p)", Fullscreen, pTarget);
     HRESULT hr = m_real->SetFullscreenState(Fullscreen, pTarget);
     Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr)) ResyncAfterModeChange();
     LogState("after SetFullscreenState");
     return hr;
 }
@@ -183,6 +196,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeTarget(const DXGI_MODE_DESC* p
         Log("ResizeTarget(null)");
     HRESULT hr = m_real->ResizeTarget(p);
     Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr)) ResyncAfterModeChange();
     LogState("after ResizeTarget");
     return hr;
 }

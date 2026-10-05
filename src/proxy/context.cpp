@@ -4,26 +4,26 @@
 #include "wrappers.h"
 #include "diag.h"
 #include "scale.h"
-#include "hbao.h"
 #include <algorithm>
 #include <atomic>
-#include <intrin.h>
-#pragma intrinsic(_ReturnAddress)
 
 namespace goh4k {
 
 void WrappedContext::ResetTrackedState() {
     m_numVp = m_numSc = 0;
     m_uiTarget = 0;
-    m_uiVpSwapped = m_uiVpFromHbao = m_uiScFromHbao = false;
+    m_uiVpSwapped = false;
     m_vs = nullptr;
     m_vsHashKnown = false;
+    m_ps0 = nullptr;
+    m_ps0Known = false;
 }
 
 // ---------------------------------------------------------------- full-screen rules
-// The game's render targets follow its resolution setting (real), its UI projection uses the client size it
-// was told (logical), and its viewports come from either: some from the backbuffer's desc (the real screen),
-// some from the client size (the logical screen). Three mismatches follow, fixed on full-screen rects only:
+// The game's render targets follow its resolution setting (the swapchain's buffer size, "real"), its UI
+// projection uses the client size it was told ("logical"), and its viewports come from either: some from the
+// backbuffer's desc (the real screen), some from the client size (the logical screen). Three mismatches
+// follow, fixed on full-screen rects only:
 // 1. UI label surfaces (render targets smaller than the screen) are drawn with the stale real-screen
 //    viewport, so the glyphs come out magnified and clipped: applied as the logical screen, as native 1080p
 //    does.
@@ -31,36 +31,69 @@ void WrappedContext::ResetTrackedState() {
 //    the top-left part: applied as the real screen. Stock native 4K never sets a 1920x1080 viewport on a
 //    3840x2160 target (captures/20261002-122821-mission-trace.txt).
 // 3. Screen-sized textures the UI draws as images (the blurred backdrop behind prompts) are sampled with
-//    coordinates of logical / texture size, so only their top-left part shows, magnified. Such textures are
-//    marked when a UI draw samples one (UiBeforeDraw); from then on they are treated like rule 1, so the
-//    game's full-screen pass into them fills exactly that part.
-// Other rects, other targets and HBAO+ are left alone; RSGet* return the game's own values. "fix nouivp on"
-// switches all three off for A/B.
+//    coordinates of logical / texture size, so only their top-left part shows, magnified. A UI draw (see
+//    UiBeforeDraw) that samples one marks it for 2 frames; while marked it is treated like rule 1, so the
+//    game's full-screen pass into it fills exactly that part.
+// "Real screen" is the buffer size, not the window's: in windowed modes the two can differ. Other rects and
+// other targets are left alone; RSGet* return the game's own values. 114 traces of menus, missions,
+// Conquest and the tech tree never enabled scissoring, so partial scissors aren't converted. "fix nouivp on"
+// switches all three off for A/B. HBAO+ (the game's SSAO) sets viewports that match its own targets, so the
+// rules never change those; when it restores the game's state, the game's viewport gets the rules like any
+// other (A/B with the 1.x exemption: no difference, captures/v2/hb-heats.png).
 
 enum UiTarget { kUiOther = 0, kUiBelow = 1, kUiScreen = 2, kUiCopy = 3 };
 
-static int UiTargetClass(ID3D11View* v, bool render) {
-    if (!v) return kUiOther;
-    ID3D11Resource* r = nullptr;
-    v->GetResource(&r);
-    int c = kUiOther;
+static const GUID kUiClassGuid = {0x2e7b4c19, 0x6d58, 0x4a3e, {0xa1, 0x07, 0x5b, 0x92, 0xc8, 0x3f, 0x44, 0xd0}};
+static std::atomic<bool> g_anyUiCopy{false};  // rule 3 has marked a texture at least once
+
+struct UiClassCache {
+    uint32_t generation;
+    int cls;  // kUiOther / kUiBelow / kUiScreen: from the size only
+};
+
+// The size class of a view's texture against the current buffer size, cached on the view (one private-data
+// read per bind while the state is unchanged).
+static int UiSizeClass(ID3D11View* v, bool render, const UiState& s, ID3D11Resource** res) {
+    *res = nullptr;
+    uint32_t gen = UiStateGeneration();
+    UiClassCache c = {};
+    UINT size = sizeof(c);
+    if (SUCCEEDED(v->GetPrivateData(kUiClassGuid, &size, &c)) && size == sizeof(c) && c.generation == gen &&
+        (c.cls != kUiScreen || !render || !g_anyUiCopy.load(std::memory_order_relaxed)))
+        return c.cls;
+    v->GetResource(res);
+    c = {gen, kUiOther};
     ID3D11Texture2D* t = nullptr;
-    if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
+    if (*res && SUCCEEDED((*res)->QueryInterface(IID_PPV_ARGS(&t)))) {
         D3D11_TEXTURE2D_DESC d;
         t->GetDesc(&d);
-        UINT rw = g_uiRealW, rh = g_uiRealH;
-        if (render && IsUiScreenCopy(r)) c = kUiCopy;
-        else if (d.Width == rw && d.Height == rh) c = kUiScreen;
-        else if (render && (d.Width < rw || d.Height < rh)) c = kUiBelow;
+        if (d.Width == s.bw && d.Height == s.bh) c.cls = kUiScreen;
+        else if (render && (d.Width < s.bw || d.Height < s.bh)) c.cls = kUiBelow;
         t->Release();
+    }
+    v->SetPrivateData(kUiClassGuid, sizeof(c), &c);
+    return c.cls;
+}
+
+static int UiTargetClass(ID3D11View* v, bool render, const UiState& s) {
+    if (!v || !s.bw || !s.bh) return kUiOther;
+    ID3D11Resource* r = nullptr;
+    int c = UiSizeClass(v, render, s, &r);
+    if (c == kUiScreen && render && g_anyUiCopy.load(std::memory_order_relaxed)) {
+        if (!r) v->GetResource(&r);
+        if (IsUiScreenCopy(r)) c = kUiCopy;
     }
     if (r) r->Release();
     return c;
 }
 
 void WrappedContext::UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv) {
-    ID3D11RenderTargetView* rt0 = rtvs && numRtvs ? rtvs[0] : nullptr;
-    int c = rt0 ? UiTargetClass(rt0, true) : UiTargetClass(dsv, false);
+    UiState s = UiSnapshot();
+    int c = kUiOther;
+    if (s.active) {
+        ID3D11RenderTargetView* rt0 = rtvs && numRtvs ? rtvs[0] : nullptr;
+        c = rt0 ? UiTargetClass(rt0, true, s) : UiTargetClass(dsv, false, s);
+    }
     if (c != m_uiTarget) {
         m_uiTarget = c;
         if (m_numVp) UiApplyViewports();
@@ -70,61 +103,65 @@ void WrappedContext::UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT 
 
 // The full-screen size to swap on the bound target, and what it becomes.
 static bool UiSwap(int target, UINT* fromW, UINT* fromH, UINT* toW, UINT* toH) {
-    if (target == kUiOther || !UiScaleActive()) return false;
-    Ratio q = UiScaleRatio();
-    UINT rw = g_uiRealW, rh = g_uiRealH, lw = (UINT)RatioDown((long)rw, q), lh = (UINT)RatioDown((long)rh, q);
-    if (target == kUiScreen) *fromW = lw, *fromH = lh, *toW = rw, *toH = rh;
-    else *fromW = rw, *fromH = rh, *toW = lw, *toH = lh;
-    return true;
+    if (target == kUiOther) return false;
+    UiState s = UiSnapshot();
+    if (!s.active || !s.bw || !s.bh) return false;
+    if (target == kUiScreen) *fromW = s.lw, *fromH = s.lh, *toW = s.bw, *toH = s.bh;
+    else *fromW = s.bw, *fromH = s.bh, *toW = s.lw, *toH = s.lh;
+    return *fromW != *toW || *fromH != *toH;
 }
 
-static const char* UiRuleName(int target, bool scissor) {
-    switch (target) {
-        case kUiBelow: return scissor ? "ui-label-scissor" : "ui-label-viewport";
-        case kUiScreen: return scissor ? "ui-screen-scissor" : "ui-screen-viewport";
-        default: return scissor ? "ui-copy-scissor" : "ui-copy-viewport";
-    }
+// Logged once per rule and kind of rect.
+static void NoteRule(int target, bool scissor, UINT fw, UINT fh, UINT tw, UINT th) {
+    static std::atomic<bool> noted[8];
+    if (noted[target * 2 + (scissor ? 1 : 0)].exchange(true)) return;
+    static const char* const kNames[8] = {"", "", "ui-label-viewport", "ui-label-scissor", "ui-screen-viewport",
+                                          "ui-screen-scissor", "ui-copy-viewport", "ui-copy-scissor"};
+    Log("note [%s]: full-screen %s %ux%u applied as %ux%u", kNames[target * 2 + (scissor ? 1 : 0)],
+        scissor ? "scissor" : "viewport", fw, fh, tw, th);
 }
 
 void WrappedContext::UiApplyViewports() {
     UINT fw = 0, fh = 0, tw = 0, th = 0;
-    bool rule = m_numVp && !m_uiVpFromHbao && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
+    bool rule = m_numVp && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
+    m_uiVpSwapped = false;
+    if (!rule) return m_real->RSSetViewports(m_numVp, m_numVp ? m_vp : nullptr);
     D3D11_VIEWPORT v[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-    bool changed = false;
     for (UINT i = 0; i < m_numVp; ++i) {
         v[i] = m_vp[i];
-        if (rule && v[i].TopLeftX == 0 && v[i].TopLeftY == 0 && v[i].Width == (float)fw && v[i].Height == (float)fh) {
+        if (v[i].TopLeftX == 0 && v[i].TopLeftY == 0 && v[i].Width == (float)fw && v[i].Height == (float)fh) {
             v[i].Width = (float)tw;
             v[i].Height = (float)th;
-            changed = true;
+            m_uiVpSwapped = true;
         }
     }
-    m_uiVpSwapped = changed;
-    if (changed) NoteOnce(UiRuleName(m_uiTarget, false), Fmt("full-screen viewport %ux%u applied as %ux%u", fw, fh, tw, th));
-    m_real->RSSetViewports(m_numVp, m_numVp ? v : nullptr);
+    if (m_uiVpSwapped) NoteRule(m_uiTarget, false, fw, fh, tw, th);
+    m_real->RSSetViewports(m_numVp, v);
 }
 
 void WrappedContext::UiApplyScissors() {
     UINT fw = 0, fh = 0, tw = 0, th = 0;
-    bool rule = m_numSc && !m_uiScFromHbao && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
+    bool rule = m_numSc && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
+    if (!rule) return m_real->RSSetScissorRects(m_numSc, m_numSc ? m_sc : nullptr);
     D3D11_RECT r[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
     bool changed = false;
     for (UINT i = 0; i < m_numSc; ++i) {
         r[i] = m_sc[i];
-        if (rule && r[i].left == 0 && r[i].top == 0 && r[i].right == (LONG)fw && r[i].bottom == (LONG)fh) {
+        if (r[i].left == 0 && r[i].top == 0 && r[i].right == (LONG)fw && r[i].bottom == (LONG)fh) {
             r[i].right = (LONG)tw;
             r[i].bottom = (LONG)th;
             changed = true;
         }
     }
-    if (changed) NoteOnce(UiRuleName(m_uiTarget, true), Fmt("full-screen scissor %ux%u applied as %ux%u", fw, fh, tw, th));
-    m_real->RSSetScissorRects(m_numSc, m_numSc ? r : nullptr);
+    if (changed) NoteRule(m_uiTarget, true, fw, fh, tw, th);
+    m_real->RSSetScissorRects(m_numSc, r);
 }
 
 // UI draws are recognised by their vertex shader, learnt from the indexed draws into label surfaces whose
 // stale viewport rule 1 swapped (the game's UI draws quads with DrawIndexed; its post-processing uses Draw).
 // By bytecode id, not pointer: the game creates the same UI shader more than once.
-static std::atomic<uint64_t> g_uiVs[4];
+static const int kUiVsSlots = 8;
+static std::atomic<uint64_t> g_uiVs[kUiVsSlots];
 
 static bool IsUiVs(uint64_t h) {
     for (auto& p : g_uiVs)
@@ -140,37 +177,46 @@ static void LearnUiVs(uint64_t h) {
             Log("ui: vertex shader %016llx recognised as the UI's (it draws into label surfaces)", (unsigned long long)h);
             return;
         }
+        if (none == h) return;  // another thread just learnt it
     }
+    static std::atomic<bool> full{false};
+    if (!full.exchange(true)) Log("ui: more than %d UI vertex shaders; %016llx not learnt", kUiVsSlots, (unsigned long long)h);
 }
 
 // Before each indexed draw: learn the UI's vertex shader (rule 1 draws), or mark a screen-sized texture that a
-// UI draw onto a screen-sized target samples as its image (rule 3).
+// UI draw onto a screen-sized target samples as its image (rule 3). The slot-0 texture is looked at once per
+// bind (PSSetShaderResources), the mark refreshed at most once per frame.
 void WrappedContext::UiBeforeDraw() {
-    if (!m_vs || !UiScaleActive() || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen)) return;
+    if (!m_vs || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen && m_uiTarget != kUiCopy)) return;
     if (!m_vsHashKnown) m_vsHash = ShaderHash(m_vs), m_vsHashKnown = true;
     if (m_uiTarget == kUiBelow) {
         if (m_uiVpSwapped) LearnUiVs(m_vsHash);
         return;
     }
-    if (!IsUiVs(m_vsHash)) return;
-    ID3D11ShaderResourceView* srv = nullptr;
-    m_real->PSGetShaderResources(0, 1, &srv);
-    if (!srv) return;
-    ID3D11Resource* r = nullptr;
-    srv->GetResource(&r);
-    srv->Release();
-    ID3D11Texture2D* t = nullptr;
-    if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
-        D3D11_TEXTURE2D_DESC d;
-        t->GetDesc(&d);
-        if (d.Width == g_uiRealW && d.Height == g_uiRealH && (d.BindFlags & D3D11_BIND_RENDER_TARGET) && !IsUiScreenCopy(r)) {
-            MarkUiScreenCopy(r);
-            Log("ui: %ux%u fmt=%d texture drawn by the UI as an image; renders into it fill the logical part from now on",
-                d.Width, d.Height, (int)d.Format);
+    if (m_uiTarget != kUiScreen || !m_ps0 || !IsUiVs(m_vsHash)) return;
+    if (!m_ps0Known) {
+        m_ps0Known = true;
+        m_ps0Copy = nullptr;
+        UiState s = UiSnapshot();
+        ID3D11Resource* r = nullptr;
+        m_ps0->GetResource(&r);
+        ID3D11Texture2D* t = nullptr;
+        if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
+            D3D11_TEXTURE2D_DESC d;
+            t->GetDesc(&d);
+            if (d.Width == s.bw && d.Height == s.bh && (d.BindFlags & D3D11_BIND_RENDER_TARGET)) m_ps0Copy = r;
+            t->Release();
         }
-        t->Release();
+        if (r) r->Release();  // the bound view keeps it alive while m_ps0Copy is used
     }
-    if (r) r->Release();
+    if (!m_ps0Copy) return;
+    if (!g_anyUiCopy.exchange(true)) {
+        D3D11_TEXTURE2D_DESC d;
+        static_cast<ID3D11Texture2D*>(m_ps0Copy)->GetDesc(&d);
+        Log("ui: %ux%u fmt=%d texture drawn by the UI as an image; renders into it fill the logical part while it is",
+            d.Width, d.Height, (int)d.Format);
+    }
+    MarkUiScreenCopy(m_ps0Copy);
 }
 
 void STDMETHODCALLTYPE WrappedContext::OMSetRenderTargets(UINT NumViews, ID3D11RenderTargetView* const* ppRenderTargetViews,
@@ -194,7 +240,6 @@ void STDMETHODCALLTYPE WrappedContext::RSSetViewports(UINT NumViewports, const D
     m_numVp = std::min<UINT>(NumViewports, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pViewports) memcpy(m_vp, pViewports, m_numVp * sizeof(D3D11_VIEWPORT));
     else m_numVp = 0;
-    m_uiVpFromHbao = FromHbao(_ReturnAddress());
     UiApplyViewports();
 }
 
@@ -203,7 +248,6 @@ void STDMETHODCALLTYPE WrappedContext::RSSetScissorRects(UINT NumRects, const D3
     m_numSc = std::min<UINT>(NumRects, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE);
     if (pRects) memcpy(m_sc, pRects, m_numSc * sizeof(D3D11_RECT));
     else m_numSc = 0;
-    m_uiScFromHbao = FromHbao(_ReturnAddress());
     UiApplyScissors();
 }
 
@@ -236,6 +280,15 @@ void STDMETHODCALLTYPE WrappedContext::VSSetShader(ID3D11VertexShader* pVertexSh
                                                   ID3D11ClassInstance* const* ppClassInstances, UINT NumClassInstances) {
     m_real->VSSetShader(pVertexShader, ppClassInstances, NumClassInstances);
     if (pVertexShader != m_vs) m_vs = pVertexShader, m_vsHashKnown = false;
+}
+
+void STDMETHODCALLTYPE WrappedContext::PSSetShaderResources(UINT StartSlot, UINT NumViews,
+                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+    m_real->PSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
+    if (StartSlot == 0 && NumViews) {
+        ID3D11ShaderResourceView* v = ppShaderResourceViews ? ppShaderResourceViews[0] : nullptr;
+        if (v != m_ps0) m_ps0 = v, m_ps0Known = false;
+    }
 }
 
 // ---------------------------------------------------------------- actions
