@@ -1,13 +1,11 @@
 {
   "permissions": {
     "defaultMode": "auto",
-    "deny": [
+    "ask": [
       "Bash(winget *)", "Bash(choco *)", "Bash(scoop *)", "Bash(msiexec *)", "Bash(setx *)",
       "Bash(reg add *)", "Bash(reg delete *)",
       "PowerShell(winget *)", "PowerShell(choco *)", "PowerShell(scoop *)", "PowerShell(msiexec *)",
-      "PowerShell(setx *)", "PowerShell(reg add *)", "PowerShell(reg delete *)"
-    ],
-    "ask": [
+      "PowerShell(setx *)", "PowerShell(reg add *)", "PowerShell(reg delete *)",
       "Bash(git push *)",
       "Bash(gh pr create *)"
     ]
