@@ -26,5 +26,8 @@ bool ClientCoversMonitor(HWND hwnd, UINT clientW, UINT clientH);  // only then i
 // fullscreen at the desktop size) Windows sends no WM_SIZE, and the game lays its UI out from its mode size
 // instead. At most one is queued at a time.
 void NotifyGameWindowSizeChanged();
+// From the game window's Present: the resync a window reconfiguration still waits for (250 ms on), or one for a
+// UI that stays projected at the real size (input.cpp).
+void ResyncIfLaidOutReal();
 
 }  // namespace goh4k

@@ -1,8 +1,7 @@
 # Copies the Goh4kMod proxy into the game's binaries\x64. A stock file with the same name is backed up to
 # scratch\stock-backup first. Records hashes in scratch\deployed.txt and the change in LOG.md.
-# Run through deploy.cmd. -Release deploys the packaged release build (build\release\Goh4kMod-*\: both DLLs
-# plus the uninstaller) exactly as a user would install it. -TestDir points it at a fake game folder for the
-# self-test.
+# Run through deploy.cmd. -Release deploys the packaged release build (build\release\Goh4kMod-*\: both DLLs)
+# exactly as a user would install it. -TestDir points it at a fake game folder for the self-test.
 param([string]$TestDir, [switch]$Release)
 . "$PSScriptRoot\gamefolder-common.ps1"
 
@@ -13,7 +12,7 @@ if (-not (Test-Path $Baseline)) { throw "Baseline $Baseline is missing; take it 
 if ($Release) {
     $pkg = Get-ChildItem "$Root\build\release" -Directory -Filter 'Goh4kMod-*' | Sort-Object Name | Select-Object -Last 1
     if (-not $pkg) { throw "No packaged release in build\release; run build.cmd release first." }
-    $files = @('d3d11.dll', 'dxgi.dll', 'Uninstall Goh4kMod.bat') | ForEach-Object { @{ Src = "$($pkg.FullName)\$_"; Name = $_ } }
+    $files = @('d3d11.dll', 'dxgi.dll') | ForEach-Object { @{ Src = "$($pkg.FullName)\$_"; Name = $_ } }
 } else {
     $files = @(@{ Src = "$Root\build\d3d11.dll"; Name = 'd3d11.dll' }, @{ Src = "$Root\build\dxgi.dll"; Name = 'dxgi.dll' })
 }

@@ -136,6 +136,7 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     if (game) {
         ++Counters().gameFrames;
         if (UiScaleActive()) Count(Counters().framesScaled);
+        ResyncIfLaidOutReal();
         if (now - m_checkTick >= 2000) {
             bool first = !m_checkTick;
             m_checkTick = now;

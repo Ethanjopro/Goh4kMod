@@ -1,10 +1,11 @@
 # Packages the release build (build.cmd release) into build\release\Goh4kMod-<version>.zip:
-#   d3d11.dll, dxgi.dll (release flavour), Uninstall Goh4kMod.bat, README.txt, THIRD-PARTY-NOTICES.txt
+#   d3d11.dll, dxgi.dll (release flavour), README.txt, THIRD-PARTY-NOTICES.txt. No uninstaller script: antivirus
+#   tools flag a .bat that deletes DLLs; players delete the two DLLs themselves (README).
 # No goh4k.ini: the release defaults are the shipped settings. The DLL still reads one if a user adds it.
 # Refuses to package if a DLL contains this machine's user name or project path (privacy check).
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
-$Version = '2.1'
+$Version = '2.1.1'
 $Out = "$Root\build\release"
 $Stage = "$Out\Goh4kMod-$Version"
 $Zip = "$Out\Goh4kMod-$Version.zip"
@@ -28,8 +29,8 @@ foreach ($dll in 'd3d11.dll', 'dxgi.dll') {
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $Stage | Out-Null
 Copy-Item "$Out\d3d11.dll", "$Out\dxgi.dll" $Stage
-# Text files go out with CRLF whatever the checkout did: Notepad and cmd.exe both expect it.
-foreach ($name in 'Uninstall Goh4kMod.bat', 'README.txt', 'THIRD-PARTY-NOTICES.txt') {
+# Text files go out with CRLF whatever the checkout did: Notepad expects it.
+foreach ($name in 'README.txt', 'THIRD-PARTY-NOTICES.txt') {
     $text = [IO.File]::ReadAllText("$Root\src\package\$name") -replace '\r?\n', "`r`n"
     [IO.File]::WriteAllText("$Stage\$name", $text, [Text.Encoding]::ASCII)
 }

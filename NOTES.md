@@ -29,7 +29,9 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
    is the swapchain's buffer size, which windowed modes can make differ from the window:
    1. UI label surfaces (render targets smaller than the screen) are drawn with the stale real-screen
       viewport: applied as the logical screen, as at native 1080p. Otherwise text comes out 2x and
-      clipped.
+      clipped. Only while the UI is projected at the logical size (the UI vertex shader's `vs_scene`
+      viewProj, cb0 at byte 48, read from the game's UpdateSubresource): in the one frame after a
+      borderless APPLY that the game projects at the real size, the game's viewport is right (History 16).
    2. Tone-map and glow passes set the logical-screen viewport on screen-sized targets: applied as the real
       screen. Otherwise the 3D fills only the top-left part. Stock native 4K never does this.
    3. The blurred backdrop behind prompts is a screen-sized texture the UI draws as an image. Each popup's
@@ -106,6 +108,20 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 15. **Borderless renders at the desktop size** whatever Resolution says (buffers 3840x2160 with Resolution
     2560x1440 on the 4K desktop), so buffers never differ from the window there. The stand-in size is
     buffer² / logical anyway, which is k times the image whenever they match.
+16. **Borderless Options APPLY** (Ethan, 2026-10-06; any APPLY, e.g. a Resolution change): the whole UI
+    came back at native size, the menu backdrop shrunk into the top-left, and it stayed so. The game thread
+    re-applies the borderless window (GetMonitorInfoW, SetWindowLongPtr, SetWindowPos with SWP_FRAMECHANGED
+    and the same size), stores the monitor's real size as its screen size, and SendMessages its window
+    WM_USER+0x19, whose handler lays the UI out at that size. The window size doesn't change, so Windows
+    sends no WM_SIZE and the mod never said the logical size again. Fix (input.cpp): after such a
+    reconfigure, a resync queued right after the game has handled the first private message from another
+    thread (fallback: 250 ms, from Present). Things that don't work: a resync at the reconfigure (overwritten
+    by the game's store), a WM_SIZE just before WM_USER+0x19, or a logical GetMonitorInfoW (the handler then
+    shrinks the window to the stored 1920x1080), a 50 ms delay (labels drawn meanwhile stay small). Even
+    so, one frame is projected at the real size (the render thread draws it after the resync), and label
+    surfaces it draws are kept: rule 1 now follows the projection. A self-check resyncs when the UI
+    stays projected at the real size for 250 ms while k > 1 (any path that skips our WM_SIZE). Options'
+    "Current mode" then shows the real size (3840x2160), as in the stock game.
 
 ## What the mod relies on in the game (check these after an update)
 
@@ -114,6 +130,8 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 | lays its UI out from the client size it is told (WM_SIZE, GetClientRect) | UI at native size while the mouse is divided by k: clicks land wrong | nothing automatic | menu captures differ; session summary: rule 1 never applied |
 | reads the mouse with GetCursorPos (and ScreenToClient/ClientToScreen/MapWindowPoints, MSG) | a new function (GetCursorInfo, PeekMessageA, GetMessagePos...) sees real pixels | logs a WARNING at start | `game now imports ...` in the dev build's log |
 | keeps one window and its own window procedure | handled | follows a new window; puts its procedure back | `destroyed` / `subclassed again` log lines |
+| applies a borderless APPLY in a private message its game thread sends the window (History 16) | UI at native size after APPLY, or a resync before the change lands | resyncs 250 ms after the reconfigure if no such message comes, or when the UI stays projected at the real size | `resync (no message ...)` or `projected at the real size for 250 ms` in the dev log |
+| projects its UI with the `vs_scene` viewProj (cb0 at byte 48, ortho 2/w, -2/h), updated with UpdateSubresource | rule 1 can't read the projection and applies as before | rule 1 as in 2.1 | no `projects its UI at` lines after a borderless APPLY |
 | draws UI text into label surfaces with the real-screen viewport (rule 1) | text 2x and cut off, or the rule unused | nothing automatic | text crops; session summary warning |
 | sets the logical viewport on screen-sized targets only by mistake (rule 2; stock 4K never sets 1920x1080 on 3840x2160) | a new half-res pass in the top-left of a full target would be stretched | nothing automatic | preset-sweep traces: a new rule-2 pixel shader |
 | draws popup backdrops with 0..1 in an element's first frame and logical / texture size after (rule 3) | wrong backdrop for some frames | dev build logs `ui check ... DISAGREES` | update check burst + dev log |
@@ -140,7 +158,7 @@ top says whether this is the build the mod version was verified with
 | Diagnostics (capture/trace/dumprt/stats) | `src/proxy/diag.*` |
 | Config, logging, dev vs release paths | `src/proxy/util.cpp`, `common.h` |
 | dxgi proxy (factory wrapper) | `src/dxgi/main.cpp` |
-| Release package text | `src/package/` (README, user uninstaller, notices, Nexus page text); `src/scripts/package.ps1` |
+| Release package text | `src/package/` (README, notices, Nexus page text); `src/scripts/package.ps1` |
 | Tools | `build/drive/drive.exe` (input + desktop snaps), `build/drive/imgtool.exe` (crop/side/diff) |
 
 ## Build, test, deploy
@@ -150,7 +168,7 @@ top says whether this is the build the mod version was verified with
   `scratch/logs/`; diagnostics in `captures/`).
 - `build.cmd release`: release DLLs (`/DGOH4K_RELEASE`: settings next to the DLL, no log (Ethan, 2.1: the
   log-only work is compiled out too, `kLogging`), diagnostics off, no local paths embedded), packaged as
-  `build/release/Goh4kMod-2.1.zip`. `package.ps1`
+  `build/release/Goh4kMod-2.1.1.zip`. `package.ps1`
   refuses to package a DLL that contains the user name or project path.
 - Tests (run with the game closed):
   - `build\proxytest.exe`: wrapper smoke test, diagnostics round trip, ratio math, and native-scaling
@@ -232,7 +250,10 @@ top says whether this is the build the mod version was verified with
   (History 13). Harmless while the game reads the mouse with GetCursorPos.
 - Proton / Steam Deck: the mod is inert by default (Proton's own d3d11/dxgi are used).
 - Windowed mode (a window smaller than its monitor) isn't scaled: the UI is its stock native size there.
-- Options' read-only "Current mode" line shows the logical size (1920x1080 at 4K).
+- Options' read-only "Current mode" line shows the logical size (1920x1080 at 4K), or the real size after a
+  borderless APPLY (History 16).
+- After a borderless APPLY one frame shows the UI at its native size (the game projects it at the real size
+  for that frame).
 - UI text and icons are the 1080p art magnified, as in 1.0. 1-pixel UI lines draw one real pixel wide.
 - After changing resolution in Options, the cursor keeps its old size until the game creates a new one
   (restart once).

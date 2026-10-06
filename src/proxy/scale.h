@@ -43,6 +43,11 @@ void SetUiClientOrigin(LONG x, LONG y);
 void SetUiClient(UINT realW, UINT realH, bool coversMonitor, const char* why, bool notify = true);
 void SetUiBuffer(UINT w, UINT h);  // the game window's swapchain, after create/resize
 void ClearUiClient(const char* why);  // no game window any more: k = 1 until the next one
+// The size the game projects its UI at, from its shader constants (context.cpp).
+void SetUiProjection(UINT w, UINT h);
+// True once when the UI has stayed projected at the real size for 250 ms while k > 1: the game has laid it out
+// at the real size without a WM_SIZE (NOTES History 16), and the caller resyncs.
+bool UiProjectionStuckReal(ULONGLONG now);
 // Something the mod relies on broke mid-session: k = 1 and UiScale off from now on (the same switch a failed
 // hook install uses), logged as a warning. False if it was off.
 // The caller resyncs the window (input.h NotifyGameWindowSizeChanged).

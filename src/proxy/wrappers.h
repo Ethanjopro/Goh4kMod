@@ -104,6 +104,7 @@ private:
     bool UiBeforeDraw();
     void UiAfterDraw();
     void UiCheckImageDraw(UINT indexCount, UINT startIndex, INT baseVertex, bool standIn);
+    void UiFollowProjection();
 
     WrappedDevice* m_device;
     bool m_immediate;
@@ -116,6 +117,7 @@ private:
     UINT m_numSc = 0;
     int m_uiTarget = 0;            // bound target class (context.cpp UiTarget)
     bool m_uiVpSwapped = false;    // a full-screen viewport is applied swapped right now
+    bool m_uiRealProjection = false;  // the UI projection at the last label draw was the real screen (rule 1 off)
     ID3D11VertexShader* m_vs = nullptr;  // bound vertex shader (no reference)
     uint64_t m_vsHash = 0;               // its id (diag.h ShaderHash), looked up on first need after a bind
     bool m_vsHashKnown = false;

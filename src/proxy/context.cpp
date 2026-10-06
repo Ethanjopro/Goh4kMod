@@ -6,6 +6,7 @@
 #include "scale.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 
 namespace goh4k {
 
@@ -24,7 +25,7 @@ void WrappedContext::ResetTrackedState() {
 // follow, fixed on full-screen rects only:
 // 1. UI label surfaces (render targets smaller than the screen) are drawn with the stale real-screen
 //    viewport, so the glyphs come out magnified and clipped: applied as the logical screen, as native 1080p
-//    does.
+//    does. Only while the UI is projected at the logical size (UiFollowProjection).
 // 2. Tone-map/glow passes on screen-sized targets set the logical-screen viewport, so the image covers only
 //    the top-left part: applied as the real screen. Stock native 4K never sets a 1920x1080 viewport on a
 //    3840x2160 target (captures/20261002-122821-mission-trace.txt).
@@ -115,7 +116,8 @@ static void NoteRule(int target, bool scissor, UINT fw, UINT fh, UINT tw, UINT t
 
 void WrappedContext::UiApplyViewports() {
     UINT fw = 0, fh = 0, tw = 0, th = 0;
-    bool rule = m_numVp && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) && !FixOn("nouivp");
+    bool rule = m_numVp && !(m_uiTarget == kUiBelow && m_uiRealProjection) && UiSwap(m_uiTarget, &fw, &fh, &tw, &th) &&
+                !FixOn("nouivp");
     m_uiVpSwapped = false;
     if (!rule) return m_real->RSSetViewports(m_numVp, m_numVp ? m_vp : nullptr);
     D3D11_VIEWPORT v[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
@@ -177,6 +179,57 @@ static void LearnUiVs(uint64_t h) {
     }
     static std::atomic<bool> full{false};
     if (!full.exchange(true)) Log("ui: more than %d UI vertex shaders; %016llx not learnt", kUiVsSlots, (unsigned long long)h);
+}
+
+// The size the UI is projected at, from its vertex shader's vs_scene constants (cb0: viewProj at byte 48, an
+// orthographic 2/w, -2/h). Normally the logical size it was told; for a moment after a borderless Options APPLY the
+// real one (input.cpp), and label surfaces drawn then must keep the game's own viewport (rule 1 off), or their
+// text comes out half size and stays so. The buffer bound at slot 0 by UI draws is marked; the game updates it
+// with UpdateSubresource, and each update of a marked buffer on the immediate context records the size (on a
+// deferred one, or by a copy, it becomes unknown: rule 1 as before).
+static const GUID kUiSceneGuid = {0x5a1d0c11, 0x2b3c, 0x4d5e, {0x9f, 0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76}};
+struct UiScene {
+    UINT w, h;  // 0: not known
+};
+
+static void UiSceneUpdated(ID3D11Resource* r, const D3D11_BOX* box, const void* src, bool immediate) {
+    UiScene c = {};
+    UINT size = sizeof(c);
+    if (!r || FAILED(r->GetPrivateData(kUiSceneGuid, &size, &c)) || size != sizeof(c)) return;  // not the UI's
+    UINT left = box ? box->left : 0;
+    if (box && (left > 48 || box->right < 80)) return;  // the projection's bytes are not in this update
+    D3D11_BUFFER_DESC d;
+    static_cast<ID3D11Buffer*>(r)->GetDesc(&d);  // marked: a buffer
+    if (!box && d.ByteWidth < 80) return;
+    UiScene n = {};
+    if (immediate && src) {
+        const float* m = (const float*)((const uint8_t*)src + 48 - left);  // rows 0 and 1 of viewProj
+        if (m[0] > 0 && m[5] < 0 && std::fabs(m[3] + 1) < 1e-3f && std::fabs(m[7] - 1) < 1e-3f) {
+            long w = std::lround(2 / m[0]), h = std::lround(-2 / m[5]);
+            if (w > 0 && h > 0 && w < 32768 && h < 32768) n = {(UINT)w, (UINT)h};
+        }
+    }
+    r->SetPrivateData(kUiSceneGuid, sizeof(n), &n);
+    if (n.w) SetUiProjection(n.w, n.h);
+}
+
+void WrappedContext::UiFollowProjection() {
+    if (!m_immediate || !IsUiVs(m_vsHash)) return;
+    ID3D11Buffer* b = nullptr;
+    m_real->VSGetConstantBuffers(0, 1, &b);
+    if (!b) return;
+    UiScene c = {};
+    UINT size = sizeof(c);
+    if (FAILED(b->GetPrivateData(kUiSceneGuid, &size, &c)) || size != sizeof(c))
+        b->SetPrivateData(kUiSceneGuid, sizeof(c), &c), c = {};  // mark it; known from its next update
+    b->Release();
+    if (!c.w) return;
+    UiState s = UiSnapshot();
+    bool real = c.w == s.bw && c.h == s.bh && !(c.w == s.lw && c.h == s.lh);
+    if (real == m_uiRealProjection) return;
+    m_uiRealProjection = real;
+    Log("ui: the game projects its UI at %ux%u%s", c.w, c.h, real ? ", the real size: label surfaces keep its viewport" : "");
+    UiApplyViewports();
 }
 
 // Rule 3's stand-in for a screen-sized image: large enough that the UI's coordinates (logical / buffer size)
@@ -312,6 +365,7 @@ bool WrappedContext::UiBeforeDraw() {
     if (!m_vsHashKnown) m_vsHash = ShaderHash(m_vs), m_vsHashKnown = true;
     if (m_uiTarget == kUiBelow) {
         if (m_uiVpSwapped) LearnUiVs(m_vsHash);
+        UiFollowProjection();  // rule 1 only while the UI is projected at the logical size
         return false;
     }
     if (!IsUiVs(m_vsHash)) return false;
@@ -543,6 +597,7 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion(ID3D11Resource* pDs
                                                             UINT SrcSubresource, const D3D11_BOX* pSrcBox) {
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
+    UiSceneUpdated(pDstResource, nullptr, nullptr, false);  // a copy into the UI's constants: projection unknown
     m_real->CopySubresourceRegion(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
     TRACE_AFTER();
 }
@@ -553,6 +608,7 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
                                                              const D3D11_BOX* pSrcBox, UINT CopyFlags) {
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion1 dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
+    UiSceneUpdated(pDstResource, nullptr, nullptr, false);
     m_real->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource,
                                    pSrcBox, CopyFlags);
     TRACE_AFTER();
@@ -561,6 +617,7 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
 void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource, ID3D11Resource* pSrcResource) {
     TRACE_ACTION(TraceKind::Plain, "CopyResource dst=%s src=%s", ResTag(pDstResource).c_str(),
                  ResTag(pSrcResource).c_str());
+    UiSceneUpdated(pDstResource, nullptr, nullptr, false);
     m_real->CopyResource(pDstResource, pSrcResource);
     TRACE_AFTER();
 }
@@ -570,6 +627,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstRes
                                                         UINT SrcRowPitch, UINT SrcDepthPitch) {
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
+    UiSceneUpdated(pDstResource, pDstBox, pSrcData, m_immediate);
     m_real->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
     TRACE_AFTER();
 }
@@ -579,6 +637,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource1(ID3D11Resource* pDstRe
                                                          UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags) {
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource1 dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
+    UiSceneUpdated(pDstResource, pDstBox, pSrcData, m_immediate);
     m_real->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
     TRACE_AFTER();
 }

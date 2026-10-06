@@ -329,6 +329,33 @@ static void UpdateClientOrigin(HWND h) {
 // was out of the chain, it would never come back to clear this.
 static std::atomic<ULONGLONG> g_resyncPostedAt{0};
 
+// The game reconfigured its window (a frame change, or a size passed to SetWindowPos) and its client size stayed the
+// same, so Windows sent no WM_SIZE. In borderless that is every Options APPLY: the game thread re-applies the
+// borderless window, takes its monitor's real size as its screen size and sends the window a private message
+// (WM_USER + 0x19 in this build) whose handler lays the UI out at that size (and would shrink the window to a
+// logical size stored before it). The resync is queued right after the game has handled the first private
+// message from another thread, or 250 ms after the reconfigure if none comes. The frame drawn in between is
+// projected at the real size; rule 1 follows the projection (context.cpp). Should the resync still have come too
+// early (another private message first), the UI stays projected at the real size, and ResyncIfLaidOutReal
+// resyncs again after 250 ms.
+static std::atomic<ULONGLONG> g_reconfiguredAt{0};  // 0: nothing waiting
+static UINT g_sizeMessages = 0;                     // WM_SIZE handled (the window's thread only)
+
+static void ResyncNow(const char* why) {
+    Log("input: game window reconfigured with its size unchanged: resync %s", why);
+    NotifyGameWindowSizeChanged();
+}
+
+void ResyncIfLaidOutReal() {
+    ULONGLONG now = GetTickCount64(), at = g_reconfiguredAt.load(std::memory_order_relaxed);
+    if (at && now - at >= 250 && g_reconfiguredAt.compare_exchange_strong(at, 0))
+        ResyncNow("(no message from the game followed)");
+    if (UiProjectionStuckReal(now)) {
+        Log("input: the game's UI has been projected at the real size for 250 ms: resync");
+        NotifyGameWindowSizeChanged();
+    }
+}
+
 static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l);
 
 // The window is going away: nothing is converted until the next game window (the next swapchain's).
@@ -353,6 +380,7 @@ static void ForgetGameWindow(HWND h) {
         SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)g_gameProc.load());
     g_subclassed = nullptr;
     g_resyncPostedAt = 0;
+    g_reconfiguredAt = 0;
     ClearUiClient("game window destroyed");
     Log("input: game window %p destroyed, no longer subclassed", h);
     HWND next = g_pendingWindow.exchange(nullptr);
@@ -377,6 +405,7 @@ static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return CallWindowProcW(g_gameProc, h, WM_SIZE, SIZE_RESTORED, size);
     }
     if (m == WM_SIZE) {
+        ++g_sizeMessages;
         if (w != SIZE_MINIMIZED) {
             UpdateClientOrigin(h);
             // This message carries the size, converted below with the factor just set, so no resync.
@@ -388,6 +417,19 @@ static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         RECT r = {};
         if (Real_GetClientRect(h, &r) && !IsIconic(h))  // moved onto or off a whole monitor
             SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(h, r.right, r.bottom), "WM_MOVE", true);
+    } else if (m == WM_WINDOWPOSCHANGED) {
+        auto* p = (const WINDOWPOS*)l;
+        bool reconfigured = p && (!(p->flags & SWP_NOSIZE) || (p->flags & SWP_FRAMECHANGED));
+        UINT sizes = g_sizeMessages;
+        LRESULT r = CallWindowProcW(g_gameProc, h, m, w, l);  // the WM_SIZE for a new client size comes from in here
+        if (reconfigured && sizes == g_sizeMessages && UiScaleActive() && !FixOn("noreconfig"))  // dev A/B
+            g_reconfiguredAt = GetTickCount64();
+        return r;
+    } else if (m >= WM_USER && m < 0xC000 && g_reconfiguredAt &&
+               (InSendMessageEx(nullptr) & (ISMEX_SEND | ISMEX_NOTIFY))) {
+        LRESULT r = CallWindowProcW(g_gameProc, h, m, w, l);  // the game applies its change
+        if (g_reconfiguredAt.exchange(0)) ResyncNow(Fmt("after its message 0x%x", m).c_str());
+        return r;
     } else if (m == WM_NCDESTROY) {
         WNDPROC next = g_gameProc;
         ForgetGameWindow(h);

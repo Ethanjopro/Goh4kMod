@@ -19,7 +19,7 @@ Above 1080p the game's interface shrinks: at 4K it's half the size it was meant 
 [list=1]
 [*]Close the game.
 [*]In Steam, right-click the game > Manage > Browse local files, and open [b]binaries\x64[/b].
-[*]Copy [b]d3d11.dll[/b], [b]dxgi.dll[/b] and [b]Uninstall Goh4kMod.bat[/b] from the zip into that folder.
+[*]Copy [b]d3d11.dll[/b] and [b]dxgi.dll[/b] from the zip into that folder.
 [*]Start the game and play at your monitor's resolution. Nothing to set.
 [/list]
 Updating from 1.0? Version 1.0 needed Resolution 1920x1080; set your monitor's resolution again in OPTIONS > VIDEO.
@@ -28,7 +28,7 @@ Updating from 1.0? Version 1.0 needed Resolution 1920x1080; set your monitor's r
 The game has its own anti-cheat, and this mod was tested in single-player only.
 [list=1]
 [*]Close the game.
-[*]Double-click [b]Uninstall Goh4kMod.bat[/b] in binaries\x64.
+[*]In binaries\x64, delete [b]d3d11.dll[/b] and [b]dxgi.dll[/b].
 [/list]
 
 [size=4][b]Good to know[/b][/size]

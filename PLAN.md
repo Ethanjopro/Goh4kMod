@@ -222,9 +222,9 @@ WineHooks HD mode has shown the trick works in this game.
   goes to scratch\logs\.
 - **After a game update:** if Steam's file check runs, it doesn't remove our added DLLs. If the game
   misbehaves after an update, run uninstall.cmd, then rebuild and deploy.
-- **Shareable build:** `build.cmd release` produces build\release\Goh4kMod-2.1.zip. The zip has no
+- **Shareable build:** `build.cmd release` produces build\release\Goh4kMod-2.1.1.zip. The zip has no
   goh4k.ini (the built-in defaults are the settings), but the DLL reads one next to it if present. It writes
-  no log. Players uninstall with the zip's `Uninstall Goh4kMod.bat`. See NOTES.md for how
+  no log. Players uninstall by deleting the two DLLs (2.1.1 ships no uninstaller script). See NOTES.md for how
   it works and how to fix it after a game update.
 - **History:** milestones M1-M5 above built 1.0 (game at 1920x1080, rendered at 2x). 2.0 replaced that with
   native scaling only (LOG.md, 2026-10-05).

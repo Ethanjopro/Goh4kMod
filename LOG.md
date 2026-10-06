@@ -65,14 +65,21 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - 2026-10-05 21:05 deploy: d3d11.dll sha256 6D0359A1495A (new file)
 - 2026-10-05 21:05 deploy: dxgi.dll sha256 46795A406393 (new file)
 - 2026-10-05 21:05 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (new file)
+- 2026-10-05 23:50 to 2026-10-06 01:01: 18 dev-build deploys (d3d11.dll, dxgi.dll) while debugging the borderless
+  APPLY (2026-10-06 entry below), the update check's included.
+- 2026-10-06 01:04 deploy: a first 2.1.1 package (still with Uninstall Goh4kMod.bat).
+- 2026-10-06 01:30 uninstall: removed d3d11.dll, dxgi.dll, Uninstall Goh4kMod.bat; folder matches the baseline
+  (26 files).
+- 2026-10-06 01:30 deploy: the final 2.1.1 release, no uninstaller (d3d11.dll A1FF60BB798C, dxgi.dll 4543AB43E49F).
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
   campaign, campaign\conquest 4.sav (Germany vs USSR, one retreat). Delete it freely. Ethan's own saves and
   campaigns are byte-identical to scratch\profile-backup-2026-10-02.
 - options.set: 1.0 needed 1920x1080; 2.0 needs no setting. Since 2026-10-05 it is back at 3840x2160 (set
-  through the game's Options). Older copies: scratch\settings-backup\ (options.set.2026-10-02 and
-  profile-2026-10-05).
+  through the game's Options); Ethan has since set Windowed borderless, Resolution 1920x1080 himself (his
+  profile as of 2026-10-05 23:50: scratch\settings-backup\borderless-20261005-235013). Older copies:
+  scratch\settings-backup\ (options.set.2026-10-02 and profile-2026-10-05).
 - scratch\shaderpak holds HLSL extracted read-only from shader.pak for analysis (gitignored). Delete freely.
 - scratch\interface-pak holds interface.pak extracted read-only for the font research (gitignored, 2078
   files). Delete freely.
@@ -556,3 +563,60 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   session counters, health line) is compiled out (`kLogging`); the shut-off itself stays. README back to
   install/uninstall only; nexus-page.txt loses its "attach goh4k.log" line. Release rebuilt, uninstalled
   and redeployed clean: menu and Exit prompt right, no goh4k.log written; profile unchanged.
+
+### 2026-10-06 Borderless: changing the resolution broke the UI (Ethan)
+- **Symptom:** in Windowed borderless, Options > Resolution > APPLY (any APPLY) left the whole UI at native
+  size, the menu backdrop shrunk into the top-left 1920x1080, until a restart (captures/borderless/05-06,
+  trace captures/20261005-235302-bl-broken-trace.txt: UI vertex shader on the backbuffer at 3840x2160).
+- **Cause** (dev-only probe hooks, since removed): on APPLY the game thread re-applies the borderless
+  window (GetMonitorInfoW 3840x2160, SetWindowLongPtr style/exstyle, SetWindowPos with SWP_FRAMECHANGED and
+  no size change, ShowWindow), stores the monitor's real size as its screen size and SendMessages its window
+  WM_USER+0x19, whose handler lays the UI out at that size. Same window size, so no WM_SIZE: the mod never
+  told it the logical size again. The resync after SetFullscreenState/ResizeTarget (fullscreen) doesn't run
+  in this path (no DXGI call at all).
+- **Fix 1 (input.cpp):** a WM_WINDOWPOSCHANGED with a frame change or an explicit size and no WM_SIZE (k > 1)
+  arms a resync; it is queued right after the game has handled the first private message (WM_USER..0xBFFF)
+  sent from another thread, or 250 ms on from Present. The game then answers our WM_SIZE with its own
+  WM_USER+0x19 and ResizeBuffers(0x0), and lays out at 1920x1080 again.
+- Tried and dropped, each in game: resync posted at the reconfigure (handled before the game's store:
+  broken); a WM_SIZE just before WM_USER+0x19 and a logical GetMonitorInfoW (the handler then shrinks the
+  window to 1920x1080: k = 1, 1080p rendering); a 50 ms settle delay and a k = 1 window during the handler
+  (labels drawn in between stay small).
+- **Fix 2 (context.cpp, rule 1):** the render thread still draws one frame projected at the real size (the UI
+  shader's vs_scene viewProj, 2/3840, logged per label draw), after the resync; rule 1 squeezed its label
+  surfaces to 1920x1080, and those it keeps (the APPLY label, the option description, CONFIRM) stayed half
+  size. Rule 1 now reads the projection from the game's UpdateSubresource of that constant buffer and leaves
+  the game's viewport while it is the real one (`ui: the game projects its UI at 3840x2160 ... / 1920x1080`).
+- Stock reference (UiScale=0, captures/borderless/20-24): the confirm prompt's backdrop is a clean blur;
+  with the mod now too (full-res crop, no double image). Rule 3's dev self-check still flags one image
+  draw per frame (coordinates 0..1 with the stand-in) while the resolution list or the prompt is up, with no
+  visible effect at full resolution; left as is.
+- Tests: proxytest PASSED with two new cases (reconfigure + private message from another thread -> logical
+  WM_SIZE right after it; without a message -> from Present). In game, borderless 3840x2160 desktop,
+  Resolution 1920x1080 -> 1600x900/1920x1200: APPLY + YES (captures/borderless/final-yes) and APPLY + timeout
+  (final-revert): prompt, Options, menu (43.6-43.8 dB vs the update-check reference) and Exit prompt
+  (50.1-51.2 dB) right; options.set keeps the chosen mode only.
+- **Self-check (scale.cpp, input.cpp):** the last UI projection is kept; if it stays at the real size for
+  250 ms while k > 1, a resync (once per change). Covers a resync that came too early (at fullscreen start
+  the first private message after a reconfigure was 0x418, one of the game's per-frame messages, sent from
+  another thread there; harmless duplicate) and any other path that lays the UI out at the real size. Proof:
+  `fix noreconfig on` (dev A/B, switches the message path off) + APPLY: `projected at the real size for 250
+  ms: resync` 250 ms after the change, prompt and Options right (captures/borderless/selfheal). The
+  projection never left 1920x1080 in the fullscreen sessions (menus, prompt, Options, mission, 2560x1440).
+- Fullscreen: update check 16 of 16 PASS (menu, Exit prompt 0 of 249 odd frames, Options, mission, mission
+  menu, logs; profile restored), with Ethan's earlier fullscreen options.set for the run. Options APPLY
+  3840x2160 -> 2560x1440 (k 4/3) and the timeout back (k 2/1), Exit prompt 51.9 dB after.
+- Version 2.1.1 (version.rc, package.ps1, log line, README, build.cmd, NOTES). Release built and tested in
+  borderless (APPLY + YES: prompt, Options, menu 46.5 dB, Exit prompt 50.8 dB; no goh4k.log); installed.
+  Ethan's profile byte-identical to the session-start backup (scratch/settings-backup/borderless-20261005-235013).
+- Ethan: no uninstaller in the release (antivirus tools flag the .bat); the README just says to delete the two
+  DLLs. src/package/Uninstall Goh4kMod.bat removed; package.ps1 ships d3d11.dll, dxgi.dll, README.txt,
+  THIRD-PARTY-NOTICES.txt; deploy -Release copies the two DLLs; uninstall.cmd still removes a leftover
+  uninstaller from older installs (test-gamefolder: section C covers it, D checks the package contents). README
+  and nexus-page.txt: install 2 files, uninstall = delete d3d11.dll and dxgi.dll. Release rebuilt: menu 45.5 dB,
+  Exit prompt 51.4 dB, clean quit.
+- Gotcha: one clean quit (Exit > YES) after the fullscreen test runs wrote options.set as Fullscreen 3840x2160
+  although the game had been started on Ethan's borderless 1920x1080 file. Not the mod (it never touches the
+  profile; options.set is not in the game's cloud profile goh.profile_v2, which holds game_progress, keys and
+  settings). Repeated with the same release: borderless loaded and kept on quit. Check options.set after test
+  sessions that switch display modes; restore from the session-start backup.

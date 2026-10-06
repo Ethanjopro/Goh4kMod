@@ -575,6 +575,30 @@ int main(int argc, char** argv) {
               "window procedure: replaced, then the mod's put back in front");
         CHECK(LOWORD(g_lastSize) == lw && HIWORD(g_lastSize) == lh, "window procedure: the resync WM_SIZE is logical (%ux%u)",
               LOWORD(g_lastSize), HIWORD(g_lastSize));
+
+        // A borderless Options APPLY: another thread re-applies the window (a frame change at the same size, so
+        // Windows sends no WM_SIZE), then sends the window a private message. Right after it the mod resyncs.
+        g_lastSize = 0;
+        HANDLE t = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+            SetWindowPos((HWND)p, nullptr, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            SendMessageW((HWND)p, WM_USER + 0x19, 0, 0);
+            return 0;
+        }, hwnd, 0, nullptr);
+        for (int i = 0; i < 200 && WaitForSingleObject(t, 0) == WAIT_TIMEOUT; ++i) Pump(), Sleep(5);
+        CloseHandle(t);
+        Pump();
+        CHECK(LOWORD(g_lastSize) == lw && HIWORD(g_lastSize) == lh,
+              "reconfigured window: a logical WM_SIZE right after the game's message (%ux%u)", LOWORD(g_lastSize),
+              HIWORD(g_lastSize));
+        // The same without a message: the resync comes from Present within a second.
+        g_lastSize = 0;
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        Pump();
+        CHECK(g_lastSize == 0, "reconfigured window: no WM_SIZE at once without the game's message");
+        for (int i = 0; i < 20 && !g_lastSize; ++i) Pump(), sc->Present(0, 0), Sleep(50);
+        CHECK(LOWORD(g_lastSize) == lw && HIWORD(g_lastSize) == lh,
+              "reconfigured window: without a message, a logical WM_SIZE from Present (%ux%u)", LOWORD(g_lastSize),
+              HIWORD(g_lastSize));
     }
 
     // 6) Release everything; the device must reach 0. On the way: once the game window is destroyed nothing is

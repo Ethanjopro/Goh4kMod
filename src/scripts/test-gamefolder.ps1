@@ -53,54 +53,31 @@ Check ((Get-Content "$T\deployed.txt") -match 'stock-backup\\d3d11.dll$') 'redep
 $r = Run 'uninstall.ps1'
 Check ($r.Code -eq 0 -and (Get-FileHash "$bin\d3d11.dll" -Algorithm SHA256).Hash -eq $stockHash) 'uninstall restores the stock file, exit 0'
 
-# C: release-style files (settings file, runtime log and diagnostics folder) are removed by uninstall
+# C: release-style files (settings file, runtime log, diagnostics folder, the uninstaller releases up to 2.1
+# shipped) are removed by uninstall
 New-Baseline
 $r = Run 'deploy.ps1'
 'UiScale=1' | Set-Content "$bin\goh4k.ini"
 'log' | Set-Content "$bin\goh4k.log"
+'@echo off' | Set-Content "$bin\Uninstall Goh4kMod.bat"
 New-Item -ItemType Directory -Force "$bin\goh4k-diagnostics" | Out-Null
 'x' | Set-Content "$bin\goh4k-diagnostics\status.txt"
 $r = Run 'uninstall.ps1'
 Check ($r.Code -eq 0 -and -not (Test-Path "$bin\goh4k.ini") -and -not (Test-Path "$bin\goh4k.log") -and
-    -not (Test-Path "$bin\goh4k-diagnostics")) 'uninstall removes goh4k.ini, goh4k.log and goh4k-diagnostics, exit 0'
+    -not (Test-Path "$bin\Uninstall Goh4kMod.bat") -and -not (Test-Path "$bin\goh4k-diagnostics")) 'uninstall removes goh4k.ini, goh4k.log, an old uninstaller and goh4k-diagnostics, exit 0'
 
 $log = Get-Content "$T\LOG.md" -Raw
 Check ($log -notmatch '\(none yet' -and ([regex]::Matches($log, '- \d{4}-\d\d-\d\d')).Count -ge 8) 'LOG.md gets dated lines under Game-folder changes'
 Check ($log.IndexOf('uninstall check') -lt $log.IndexOf('## Cleanup')) 'lines stay inside the section'
 
-# D: the uninstaller shipped in the zip (src\package), run the way a user would, from binaries\x64
-$userUn = 'Uninstall Goh4kMod.bat'
+# D: the release zip holds the two DLLs, the README and the notices, and no script (antivirus tools flag one)
 $pkg = Get-ChildItem "$Root\build\release" -Directory -Filter 'Goh4kMod-*' -ErrorAction SilentlyContinue |
     Sort-Object Name | Select-Object -Last 1
 if (-not $pkg) {
-    'skip  user uninstaller (no packaged release; run build.cmd release)'
+    'skip  release package contents (no packaged release; run build.cmd release)'
 } else {
-    function RunUser($dir) {
-        $ErrorActionPreference = 'Continue'
-        $out = & "$dir\$userUn" /nopause 2>&1
-        [pscustomobject]@{ Code = $LASTEXITCODE; Out = ($out | Out-String) }
-    }
-    # Outside the game folder: refuses and keeps everything
-    $away = "$T\elsewhere"
-    New-Item -ItemType Directory -Force $away | Out-Null
-    Copy-Item "$($pkg.FullName)\d3d11.dll", "$($pkg.FullName)\$userUn" $away
-    $r = RunUser $away
-    Check ($r.Code -ne 0 -and (Test-Path "$away\d3d11.dll") -and (Test-Path "$away\$userUn")) 'user uninstaller refuses outside binaries\x64'
-    # Full install plus leftovers: removes all of it and itself, leaves the game alone
-    Copy-Item "$($pkg.FullName)\d3d11.dll", "$($pkg.FullName)\dxgi.dll", "$($pkg.FullName)\$userUn" $bin
-    'UiScale=1' | Set-Content "$bin\goh4k.ini"
-    'log' | Set-Content "$bin\goh4k.log"
-    New-Item -ItemType Directory -Force "$bin\goh4k-diagnostics" | Out-Null
-    'x' | Set-Content "$bin\goh4k-diagnostics\status.txt"
-    $r = RunUser $bin
-    $left = @('d3d11.dll', 'dxgi.dll', 'goh4k.ini', 'goh4k.log', 'goh4k-diagnostics', $userUn) | Where-Object { Test-Path "$bin\$_" }
-    Check ($left.Count -eq 0) "user uninstaller removes the mod and itself$(if ($left) { ' (left: ' + ($left -join ', ') + ')' })"
-    Check ((Test-Path "$bin\call_to_arms.exe") -and (Test-Path "$bin\mss\x.flt")) 'user uninstaller leaves game files alone'
-    # Someone else's d3d11.dll (ReShade, say) stays; ours goes
-    'other mod' | Set-Content "$bin\d3d11.dll"
-    Copy-Item "$($pkg.FullName)\dxgi.dll", "$($pkg.FullName)\$userUn" $bin
-    $r = RunUser $bin
-    Check ((Test-Path "$bin\d3d11.dll") -and -not (Test-Path "$bin\dxgi.dll") -and $r.Out -match 'd3d11.dll is not part of Goh4kMod') 'user uninstaller leaves a foreign d3d11.dll in place'
+    $names = (Get-ChildItem $pkg.FullName | ForEach-Object { $_.Name } | Sort-Object) -join ', '
+    Check ($names -eq 'd3d11.dll, dxgi.dll, README.txt, THIRD-PARTY-NOTICES.txt') "release package holds the DLLs, README and notices only ($names)"
 }
 
 Remove-Item -Recurse -Force $T

@@ -76,6 +76,25 @@ void SetUiBuffer(UINT w, UINT h) {
     if (a.bw != b.bw || a.bh != b.bh) Log("ui: swapchain buffers %ux%u", w, h);
 }
 
+static std::atomic<uint32_t> g_projection{0};        // w | h << 16
+static std::atomic<ULONGLONG> g_projectionSince{0};  // when it last changed; 0 once acted on
+
+void SetUiProjection(UINT w, UINT h) {
+    uint32_t v = (w & 0xffff) | (h & 0xffff) << 16;
+    if (g_projection.exchange(v, std::memory_order_relaxed) != v)
+        g_projectionSince.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+bool UiProjectionStuckReal(ULONGLONG now) {
+    ULONGLONG since = g_projectionSince.load(std::memory_order_relaxed);
+    if (!since || now - since < 250) return false;
+    uint32_t v = g_projection.load(std::memory_order_relaxed);
+    UINT w = v & 0xffff, h = v >> 16;
+    UiState s = UiSnapshot();
+    if (!s.active || w != s.bw || h != s.bh || (w == s.lw && h == s.lh)) return false;
+    return g_projectionSince.compare_exchange_strong(since, 0);
+}
+
 void ClearUiClient(const char* why) {
     if (!UiScaleConfigured()) return;
     UiState a, b;
