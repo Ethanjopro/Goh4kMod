@@ -90,9 +90,10 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
     - Rule 3 reads pixel-shader slot 0 back from the context (D3D11 unbinds a view by itself when its texture
       becomes a render target), and its stand-in is shared per size and format and released 5 s after the
       last popup draw (it holds the device, so it also goes with the swapchain).
-    - Logs: game build and the build this version was verified with, user32 coordinate functions the exe
-      imports that the mod doesn't convert, a health line, a session summary at unload (with a warning if
-      rule 1 never applied in a long scaled session), and a 4 MB cap.
+    - Logs (dev build only; the release writes none): game build and the build this version was verified
+      with, user32 coordinate functions the exe imports that the mod doesn't convert, a health line, a
+      session summary at unload (with a warning if rule 1 never applied in a long scaled session), and a
+      4 MB cap.
 13. **The Steam overlay patches over 5 of our hooks** (GetCursorPos, SetCursorPos, ClipCursor, GetMessageW,
     PeekMessageW; it hooks after us). Its GetCursorPos passes the game's calls on with a jump (538 of 551
     reach us with the game's return address: converted). Its GetMessageW calls us from its own code (game ->
@@ -111,7 +112,7 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 | The game... | If an update changes it | What the mod does | How it shows |
 |---|---|---|---|
 | lays its UI out from the client size it is told (WM_SIZE, GetClientRect) | UI at native size while the mouse is divided by k: clicks land wrong | nothing automatic | menu captures differ; session summary: rule 1 never applied |
-| reads the mouse with GetCursorPos (and ScreenToClient/ClientToScreen/MapWindowPoints, MSG) | a new function (GetCursorInfo, PeekMessageA, GetMessagePos...) sees real pixels | logs a WARNING at start | `game now imports ...` in goh4k.log |
+| reads the mouse with GetCursorPos (and ScreenToClient/ClientToScreen/MapWindowPoints, MSG) | a new function (GetCursorInfo, PeekMessageA, GetMessagePos...) sees real pixels | logs a WARNING at start | `game now imports ...` in the dev build's log |
 | keeps one window and its own window procedure | handled | follows a new window; puts its procedure back | `destroyed` / `subclassed again` log lines |
 | draws UI text into label surfaces with the real-screen viewport (rule 1) | text 2x and cut off, or the rule unused | nothing automatic | text crops; session summary warning |
 | sets the logical viewport on screen-sized targets only by mistake (rule 2; stock 4K never sets 1920x1080 on 3840x2160) | a new half-res pass in the top-left of a full target would be stretched | nothing automatic | preset-sweep traces: a new rule-2 pixel shader |
@@ -122,7 +123,8 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 | imports only D3D11CreateDeviceAndSwapChain and CreateDXGIFactory from d3d11/dxgi | an export our stubs lack: the game won't start | — | playbook step 2 |
 | saves the client size as its resolution in a window smaller than its monitor | (why such windows aren't scaled) | — | — |
 
-`game: built ...` at the top of goh4k.log says whether this is the build the mod version was verified with
+The log lines in this table are the dev build's (the release build writes no log). `game: built ...` at its
+top says whether this is the build the mod version was verified with
 (`kVerifiedGameStamp` in util.cpp; bump it after verifying a new game build).
 
 ## Where things are
@@ -146,8 +148,9 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 - Run `start.cmd` for a session with the MSVC environment. `build.cmd` sets that up itself either way.
 - `build.cmd`: dev build (paths to this project compiled in; config in `config/goh4k.ini`; logs in
   `scratch/logs/`; diagnostics in `captures/`).
-- `build.cmd release`: release DLLs (`/DGOH4K_RELEASE`: settings and `goh4k.log` next to the DLL,
-  diagnostics off, no local paths embedded), packaged as `build/release/Goh4kMod-2.0.zip`. `package.ps1`
+- `build.cmd release`: release DLLs (`/DGOH4K_RELEASE`: settings next to the DLL, no log (Ethan, 2.1: the
+  log-only work is compiled out too, `kLogging`), diagnostics off, no local paths embedded), packaged as
+  `build/release/Goh4kMod-2.1.zip`. `package.ps1`
   refuses to package a DLL that contains the user name or project path.
 - Tests (run with the game closed):
   - `build\proxytest.exe`: wrapper smoke test, diagnostics round trip, ratio math, and native-scaling
@@ -173,8 +176,8 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
    snapshots are in captures\update-check\<time>. Then check the table "What the mod relies on" against
    what changed. When everything is right again, bump `kVerifiedGameStamp` (util.cpp) to the new exe's link
    time stamp (`game: built ... stamp` in the log) and retake the references with `-MakeReference`.
-1. **Does it still load?** Read `goh4k.log` next to the DLLs (release build) or `scratch/logs/` (dev
-   build):
+1. **Does it still load?** Run the dev build (the update check does) and read its log in `scratch/logs/`
+   (the release build writes none):
    - `game: built ...` (is this the verified build?), "input hooks: 10 of 10", "health: input hooks 10 (5
      patched over by another program), game window followed, swapchain wrapped; client 3840x2160 (covers its
      monitor), buffers 3840x2160, k 2/1", "ui: vertex shader ... recognised as the UI's", the notes

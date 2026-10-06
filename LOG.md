@@ -57,6 +57,14 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - 2026-10-05 20:28 deploy: d3d11.dll sha256 514FB46DCC99 (new file)
 - 2026-10-05 20:28 deploy: dxgi.dll sha256 D23886FCBDAC (new file)
 - 2026-10-05 20:28 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (new file)
+- 2026-10-05 21:05 uninstall: removed d3d11.dll
+- 2026-10-05 21:05 uninstall: removed dxgi.dll
+- 2026-10-05 21:05 uninstall: removed goh4k.log
+- 2026-10-05 21:05 uninstall: removed Uninstall Goh4kMod.bat
+- 2026-10-05 21:05 uninstall check: folder matches the baseline (26 files)
+- 2026-10-05 21:05 deploy: d3d11.dll sha256 6D0359A1495A (new file)
+- 2026-10-05 21:05 deploy: dxgi.dll sha256 46795A406393 (new file)
+- 2026-10-05 21:05 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (new file)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -543,3 +551,8 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   - Past the 4 MB log cap, WARNING lines and the session summary still go in (64 KB reserve).
   - Stand-in creation failure: an atomic time, retried after 10 s; the 8K size limit no longer blocks others.
   - This file: today's deploy lines condensed into the game-folder summary.
+- Ethan: no logging in the release, and the README as simple as 2.0's without the multiplayer note (the
+  Nexus page has it). Release: no goh4k.log; the log-only work (game-build scan, hook-call counting,
+  session counters, health line) is compiled out (`kLogging`); the shut-off itself stays. README back to
+  install/uninstall only; nexus-page.txt loses its "attach goh4k.log" line. Release rebuilt, uninstalled
+  and redeployed clean: menu and Exit prompt right, no goh4k.log written; profile unchanged.

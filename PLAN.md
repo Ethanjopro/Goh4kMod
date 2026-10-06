@@ -222,9 +222,9 @@ WineHooks HD mode has shown the trick works in this game.
   goes to scratch\logs\.
 - **After a game update:** if Steam's file check runs, it doesn't remove our added DLLs. If the game
   misbehaves after an update, run uninstall.cmd, then rebuild and deploy.
-- **Shareable build:** `build.cmd release` produces build\release\Goh4kMod-2.0.zip. The zip has no
-  goh4k.ini (the built-in defaults are the settings), but the DLL reads one next to it if present, and
-  writes goh4k.log there. Players uninstall with the zip's `Uninstall Goh4kMod.bat`. See NOTES.md for how
+- **Shareable build:** `build.cmd release` produces build\release\Goh4kMod-2.1.zip. The zip has no
+  goh4k.ini (the built-in defaults are the settings), but the DLL reads one next to it if present. It writes
+  no log. Players uninstall with the zip's `Uninstall Goh4kMod.bat`. See NOTES.md for how
   it works and how to fix it after a game update.
 - **History:** milestones M1-M5 above built 1.0 (game at 1920x1080, rendered at 2x). 2.0 replaced that with
   native scaling only (LOG.md, 2026-10-05).
@@ -235,6 +235,8 @@ replace-file warning). None of the "Decisions for Ethan" (no signing, no ReShade
 follow-up, no GitHub push).
 Status (2026-10-05): done; results in LOG.md "2.1 sturdiness". A5 needed no fix (borderless renders at the
 desktop size). B1 measured: the Steam overlay patches over 5 hooks; deliberately no caller-layer change.
+Later (Ethan): the release build writes no log (goh4k.log below means the dev build's log now), and the
+README stays as simple as 2.0's, without the multiplayer note (the Nexus page has it).
 
 Ethan asked what could go wrong later (game updates, other mods, other setups) and to make the mod as
 sturdy and independent as possible. The rule for all of it: when something around the mod changes, the mod

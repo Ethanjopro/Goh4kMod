@@ -129,7 +129,7 @@ void WrappedContext::UiApplyViewports() {
     }
     if (m_uiVpSwapped) {
         NoteRule(m_uiTarget, false, fw, fh, tw, th);
-        ++(m_uiTarget == kUiBelow ? Counters().labelViewports : Counters().screenViewports);
+        Count(m_uiTarget == kUiBelow ? Counters().labelViewports : Counters().screenViewports);
     }
     m_real->RSSetViewports(m_numVp, v);
 }
@@ -169,7 +169,7 @@ static void LearnUiVs(uint64_t h) {
     for (auto& p : g_uiVs) {
         uint64_t none = 0;
         if (p.compare_exchange_strong(none, h)) {
-            ++Counters().uiShaders;
+            Count(Counters().uiShaders);
             Log("ui: vertex shader %016llx recognised as the UI's (it draws into label surfaces)", (unsigned long long)h);
             return;
         }
@@ -236,7 +236,8 @@ ID3D11ShaderResourceView* WrappedDevice::UiStandIn(ID3D11DeviceContext* ctx, ID3
             return nullptr;
         }
         slot->w = w, slot->h = h, slot->texFmt = d.Format, slot->viewFmt = vd.Format;
-        long long made = ++Counters().standInsMade;
+        Count(Counters().standInsMade);
+        long long made = Counters().standInsMade;
         if (made <= 3 || made % 50 == 0)
             Log("ui: popup stand-in %ux%u fmt=%d (%.0f MB) for a %ux%u image the UI draws (#%lld)", w, h, (int)d.Format,
                 (double)w * h * 4 / (1024 * 1024), d.Width, d.Height, made);
@@ -327,7 +328,7 @@ bool WrappedContext::UiBeforeDraw() {
         return false;
     }
     m_uiImageDraw = true;
-    ++Counters().imageDraws;
+    Count(Counters().imageDraws);
     ID3D11ShaderResourceView* standIn =
         UiEstablishedDraw(img) ? m_device->UiStandIn(m_real, v, static_cast<ID3D11Texture2D*>(img), s) : nullptr;
     img->Release();
@@ -335,7 +336,7 @@ bool WrappedContext::UiBeforeDraw() {
         v->Release();
         return false;
     }
-    ++Counters().standInDraws;
+    Count(Counters().standInDraws);
     m_uiSavedPs0 = v;  // keeps our reference: the context drops its own while the stand-in is bound
     m_real->PSSetShaderResources(0, 1, &standIn);
     standIn->Release();  // the context holds it while bound

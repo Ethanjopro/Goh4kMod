@@ -60,6 +60,12 @@ struct UiCounters {
     std::atomic<int> uiShaders{0};              // UI vertex shaders recognised
 };
 UiCounters& Counters();
+// Adds one for the session summary; nothing in the release build, which has no log. (gameFrames isn't only for
+// the log: it is incremented directly.)
+template <typename T>
+inline void Count(std::atomic<T>& c) {
+    if constexpr (kLogging) c.fetch_add(1, std::memory_order_relaxed);
+}
 void LogUiSessionSummary();
 
 }  // namespace goh4k

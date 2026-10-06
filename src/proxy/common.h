@@ -15,8 +15,8 @@ namespace goh4k {
 
 // Settings, [proxy] section of goh4k.ini. Read once at DLL load (restart the game after editing).
 //   dev build:     <project>\config\goh4k.ini; logs in <project>\scratch\logs, diagnostics in <project>\captures
-//   release build (GOH4K_RELEASE, the shared zip): goh4k.ini next to the DLL; goh4k.log next to the DLL;
-//                  diagnostics (if enabled) in goh4k-diagnostics\ next to the DLL
+//   release build (GOH4K_RELEASE, the shared zip): goh4k.ini next to the DLL; no log; diagnostics (if
+//                  enabled) in goh4k-diagnostics\ next to the DLL
 struct Config {
     int wrap = 1;         // 0: forward exports and log device creation only; 1: wrap the game's device, contexts, swapchain
     int uiScale = 1;      // 1: the UI keeps its 1080p size at the game's own resolution (scale.h); 0: pass-through
@@ -28,6 +28,13 @@ struct Config {
     int statusMs = 1000;  // how often Present rewrites status.txt
 };
 extern Config g_cfg;
+
+// The release build writes no log (Log() does nothing there), so work done only for log lines is skipped.
+#ifdef GOH4K_RELEASE
+constexpr bool kLogging = false;
+#else
+constexpr bool kLogging = true;
+#endif
 
 void Init(HMODULE self);                // DllMain(PROCESS_ATTACH): kernel32 calls only
 void Shutdown(bool processExit);        // DllMain(PROCESS_DETACH)

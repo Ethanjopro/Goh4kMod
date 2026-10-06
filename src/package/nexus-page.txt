@@ -37,7 +37,6 @@ The game has its own anti-cheat, and this mod was tested in single-player only.
 [*]Works in Fullscreen and Windowed borderless. In a smaller "Windowed" window, and at 1920x1080 and below, it changes nothing.
 [*]Not compatible with ReShade, DXVK or other mods that use d3d11.dll or dxgi.dll.
 [*]Something wrong after a game update? Uninstall and check here for a new version.
-[*]Reporting a bug? Attach [b]goh4k.log[/b] from binaries\x64.
 [/list]
 
 [size=4][b]Credits[/b][/size]

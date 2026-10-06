@@ -201,15 +201,14 @@ void Init(HMODULE self) {
     bool allowed = ExeAllowed(exes, exeName);
 
 #ifdef GOH4K_RELEASE
-    if (!allowed) {  // not the game: no log file, nothing written
+    if (!allowed) {  // not the game: nothing written
         g_cfg.wrap = 0;
         g_cfg.uiScale = 0;
         g_cfg.diagnostics = 0;
         return;
     }
     if (g_cfg.diagnostics) CreateDirectoryW(g_capturesDir.c_str(), nullptr);
-    g_log = CreateFileW((base + L"\\goh4k.log").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
-                        FILE_ATTRIBUTE_NORMAL, nullptr);
+    // No log file in the release build: g_log stays closed and Log() returns at once (kLogging).
 #else
     CreateDirectoryW((base + L"\\scratch").c_str(), nullptr);
     CreateDirectoryW((base + L"\\scratch\\logs").c_str(), nullptr);
@@ -240,7 +239,7 @@ void Init(HMODULE self) {
         g_cfg.uiScale = 0;
         return;
     }
-    LogGameBuild(exe);
+    if constexpr (kLogging) LogGameBuild(exe);
 }
 
 void Shutdown(bool processExit) {

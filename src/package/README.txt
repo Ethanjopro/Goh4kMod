@@ -19,22 +19,8 @@ INSTALL
    Coming from version 1.0? It needed Resolution 1920x1080. Set your monitor's resolution again.
 
 
-UNINSTALL - always do this before playing multiplayer
------------------------------------------------------
+UNINSTALL
+---------
 1. Close the game.
 2. In binaries\x64, double-click  Uninstall Goh4kMod.bat
 The game's settings stay as they are; the interface just goes back to its normal size.
-
-
-TROUBLESHOOTING
----------------
-- The game doesn't start, or closes right after starting: run Uninstall Goh4kMod.bat. A game update can
-  need a new version of the mod.
-- The interface is its normal (small) size: use Display mode Fullscreen or Windowed borderless at your
-  monitor's resolution. In a smaller "Windowed" window, and at 1080p-class resolutions, the mod changes
-  nothing.
-- Clicks land in the wrong place, or something looks wrong: copy the file goh4k.log out of binaries\x64
-  (written each time the game starts; the uninstaller deletes it), run the uninstaller, and report it with
-  that file.
-
-The mod is for single-player only. It never changes your game settings or saves.

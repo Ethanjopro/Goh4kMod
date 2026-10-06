@@ -135,13 +135,13 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     m_followed = game;
     if (game) {
         ++Counters().gameFrames;
-        if (UiScaleActive()) ++Counters().framesScaled;
+        if (UiScaleActive()) Count(Counters().framesScaled);
         if (now - m_checkTick >= 2000) {
             bool first = !m_checkTick;
             m_checkTick = now;
             CheckGameWindow();
             if (m_device) m_device->ReleaseStandIns(WrappedDevice::kStandInIdleMs);
-            if (first) LogHealth();
+            if (first && kLogging) LogHealth();
         }
     }
     if (g_cfg.diagnostics && now - m_statusTick >= (ULONGLONG)g_cfg.statusMs) WriteStatus(now);

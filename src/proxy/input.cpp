@@ -586,7 +586,7 @@ static void CheckHooks() {
             Log("input hook %s, patched over: %u of the %u calls since came with the game's return address%s", e.name,
                 game, checks, game ? " (converted as usual)" : "; calls that come through it are not converted");
     }
-    g_counting.store(measuring, std::memory_order_relaxed);
+    g_counting.store(kLogging && measuring, std::memory_order_relaxed);  // the counts only feed a log line
 }
 
 // Our window procedure can drop out of the chain: the game or another program sets a new one, or one that
