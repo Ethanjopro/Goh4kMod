@@ -10,12 +10,14 @@
 #include "gen/fwd_device.h"
 #include "gen/fwd_context.h"
 #include "gen/fwd_swapchain.h"
+#include <atomic>
 #include <string>
 #include <vector>
 
 namespace goh4k {
 
 class WrappedDevice;
+struct UiState;
 
 class WrappedContext final : public Fwd_ID3D11DeviceContext4 {
 public:
@@ -80,12 +82,9 @@ public:
     void STDMETHODCALLTYPE RSGetViewports(UINT* pNumViewports, D3D11_VIEWPORT* pViewports) override;
     void STDMETHODCALLTYPE RSGetScissorRects(UINT* pNumRects, D3D11_RECT* pRects) override;
     void STDMETHODCALLTYPE ClearState() override;
-    // Which vertex shader and pixel-shader texture 0 are bound: UI draws and the images they draw are
-    // recognised by them (context.cpp).
+    // Which vertex shader is bound: UI draws are recognised by it (context.cpp).
     void STDMETHODCALLTYPE VSSetShader(ID3D11VertexShader* pVertexShader, ID3D11ClassInstance* const* ppClassInstances,
                                        UINT NumClassInstances) override;
-    void STDMETHODCALLTYPE PSSetShaderResources(UINT StartSlot, UINT NumViews,
-                                                ID3D11ShaderResourceView* const* ppShaderResourceViews) override;
 
     int Level() const { return m_level; }
     bool IsImmediate() const { return m_immediate; }
@@ -120,9 +119,6 @@ private:
     ID3D11VertexShader* m_vs = nullptr;  // bound vertex shader (no reference)
     uint64_t m_vsHash = 0;               // its id (diag.h ShaderHash), looked up on first need after a bind
     bool m_vsHashKnown = false;
-    ID3D11ShaderResourceView* m_ps0 = nullptr;  // bound pixel-shader texture 0 (no reference)
-    bool m_ps0Known = false;                    // m_ps0Copy is up to date for it
-    ID3D11Resource* m_ps0Copy = nullptr;        // its texture, if screen-sized and a render target
     ID3D11ShaderResourceView* m_uiSavedPs0 = nullptr;  // the game's slot-0 view while rule 3's stand-in is bound
     bool m_uiImageDraw = false;  // the current draw is a UI draw of a screen-sized image (stand-in or not)
 };
@@ -175,14 +171,33 @@ public:
     WrappedContext* Immediate() { return m_immediate; }
     ID3D11Device* Real() { return m_real; }
 
+    // Rule 3's stand-in (context.cpp): the image copied into it on ctx, returned AddRef'd, or null.
+    ID3D11ShaderResourceView* UiStandIn(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* gameSrv, ID3D11Texture2D* img,
+                                        const UiState& s);
+    // Releases the stand-ins unused for at least that long (0: all). They hold the device: the game window's
+    // Present releases idle ones, its swapchain's final release all of them.
+    static const ULONGLONG kStandInIdleMs = 5000;
+    void ReleaseStandIns(ULONGLONG unusedForMs);
+
 private:
+    struct StandIn {
+        ID3D11Texture2D* tex = nullptr;
+        ID3D11ShaderResourceView* srv = nullptr;
+        UINT w = 0, h = 0;
+        DXGI_FORMAT texFmt = DXGI_FORMAT_UNKNOWN, viewFmt = DXGI_FORMAT_UNKNOWN;
+        ULONGLONG lastUse = 0;
+    };
     WrappedContext* AdoptImmediate(ID3D11DeviceContext* real);
     WrappedContext* WrapDeferred(ID3D11DeviceContext* real);
+    void ReleaseStandIn(StandIn* e, const char* why);  // m_standInLock held
 
     WrappedContext* m_immediate = nullptr;
     SRWLOCK m_lock = SRWLOCK_INIT;
     int m_level = 0;  // highest ID3D11DeviceN the real object supports
     LONG m_deferredCount = 0;
+    StandIn m_standIns[2];  // one per size/format in use; two in case two formats alternate
+    SRWLOCK m_standInLock = SRWLOCK_INIT;
+    std::atomic<ULONGLONG> m_standInFailedAt{0};  // when a stand-in last couldn't be created (0: never)
 };
 
 class WrappedSwapChain final : public Fwd_IDXGISwapChain4 {
@@ -214,8 +229,11 @@ private:
     void ResyncAfterModeChange();
 
     WrappedDevice* m_device;
+    HWND m_hwnd = nullptr;  // its output window
+    bool m_followed = false;  // the mod followed m_hwnd as the game window at the last Present
     int m_level = 0;  // highest IDXGISwapChainN the real object supports
     LONG64 m_frames = 0;
+    ULONGLONG m_checkTick = 0;  // last window/hook check (input.h CheckGameWindow)
     LONG64 m_framesAtStatus = 0;
     ULONGLONG m_statusTick = 0;
     double m_fps = 0;

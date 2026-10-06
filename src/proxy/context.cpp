@@ -15,8 +15,6 @@ void WrappedContext::ResetTrackedState() {
     m_uiVpSwapped = false;
     m_vs = nullptr;
     m_vsHashKnown = false;
-    m_ps0 = nullptr;
-    m_ps0Known = false;
 }
 
 // ---------------------------------------------------------------- full-screen rules
@@ -49,37 +47,36 @@ static const GUID kUiClassGuid = {0x2e7b4c19, 0x6d58, 0x4a3e, {0xa1, 0x07, 0x5b,
 
 struct UiClassCache {
     uint32_t generation;
-    int cls;  // kUiOther / kUiBelow / kUiScreen: from the size only
+    int cls;            // kUiOther / kUiBelow / kUiScreen: from the size only
+    bool renderTarget;  // its texture can be a render target (rule 3's images are)
 };
 
 // The size class of a view's texture against the current buffer size, cached on the view (one private-data
-// read per bind while the state is unchanged).
-static int UiSizeClass(ID3D11View* v, bool render, const UiState& s, ID3D11Resource** res) {
-    *res = nullptr;
+// read per bind while the state is unchanged; a view the game frees takes its answer with it).
+static UiClassCache UiViewClass(ID3D11View* v, bool render, const UiState& s) {
     uint32_t gen = UiStateGeneration();
     UiClassCache c = {};
     UINT size = sizeof(c);
-    if (SUCCEEDED(v->GetPrivateData(kUiClassGuid, &size, &c)) && size == sizeof(c) && c.generation == gen) return c.cls;
-    v->GetResource(res);
-    c = {gen, kUiOther};
+    if (SUCCEEDED(v->GetPrivateData(kUiClassGuid, &size, &c)) && size == sizeof(c) && c.generation == gen) return c;
+    c = {gen, kUiOther, false};
+    ID3D11Resource* r = nullptr;
+    v->GetResource(&r);
     ID3D11Texture2D* t = nullptr;
-    if (*res && SUCCEEDED((*res)->QueryInterface(IID_PPV_ARGS(&t)))) {
+    if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
         D3D11_TEXTURE2D_DESC d;
         t->GetDesc(&d);
         if (d.Width == s.bw && d.Height == s.bh) c.cls = kUiScreen;
         else if (render && (d.Width < s.bw || d.Height < s.bh)) c.cls = kUiBelow;
+        c.renderTarget = (d.BindFlags & D3D11_BIND_RENDER_TARGET) != 0;
         t->Release();
     }
+    if (r) r->Release();
     v->SetPrivateData(kUiClassGuid, sizeof(c), &c);
-    return c.cls;
+    return c;
 }
 
 static int UiTargetClass(ID3D11View* v, bool render, const UiState& s) {
-    if (!v || !s.bw || !s.bh) return kUiOther;
-    ID3D11Resource* r = nullptr;
-    int c = UiSizeClass(v, render, s, &r);
-    if (r) r->Release();
-    return c;
+    return v && s.bw && s.bh ? UiViewClass(v, render, s).cls : kUiOther;
 }
 
 void WrappedContext::UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv) {
@@ -130,7 +127,10 @@ void WrappedContext::UiApplyViewports() {
             m_uiVpSwapped = true;
         }
     }
-    if (m_uiVpSwapped) NoteRule(m_uiTarget, false, fw, fh, tw, th);
+    if (m_uiVpSwapped) {
+        NoteRule(m_uiTarget, false, fw, fh, tw, th);
+        ++(m_uiTarget == kUiBelow ? Counters().labelViewports : Counters().screenViewports);
+    }
     m_real->RSSetViewports(m_numVp, v);
 }
 
@@ -169,6 +169,7 @@ static void LearnUiVs(uint64_t h) {
     for (auto& p : g_uiVs) {
         uint64_t none = 0;
         if (p.compare_exchange_strong(none, h)) {
+            ++Counters().uiShaders;
             Log("ui: vertex shader %016llx recognised as the UI's (it draws into label surfaces)", (unsigned long long)h);
             return;
         }
@@ -178,50 +179,95 @@ static void LearnUiVs(uint64_t h) {
     if (!full.exchange(true)) Log("ui: more than %d UI vertex shaders; %016llx not learnt", kUiVsSlots, (unsigned long long)h);
 }
 
-// Rule 3's stand-in for a screen-sized image: k times its size, the image copied 1:1 into its top-left. Kept on
-// the image as private data (so it goes away with it) and recreated when k changes. The rest of it is never
-// sampled. Null if the image can't have one (MSAA, arrays, mips, too large).
-static const GUID kUiStandInTexGuid = {0x8c2d5f61, 0x1a7e, 0x4b93, {0xb4, 0x0c, 0x6e, 0x15, 0x92, 0xa8, 0x3d, 0x77}};
-static const GUID kUiStandInSrvGuid = {0x8c2d5f62, 0x1a7e, 0x4b93, {0xb4, 0x0c, 0x6e, 0x15, 0x92, 0xa8, 0x3d, 0x77}};
+// Rule 3's stand-in for a screen-sized image: large enough that the UI's coordinates (logical / buffer size)
+// cover the image, with the image copied 1:1 into its top-left: k times the image in fullscreen, buffer² /
+// logical in general (a borderless window can be larger than the buffers). The rest of it is never sampled.
+// One per size and format, shared by every image (each draw copies its image in first; the GPU runs copy and
+// draw in order), and released a few seconds after its last use (ReleaseStandIns), so it only costs memory
+// while a popup is open: 133 MB at 4K, 26 MB at 1440p, 420 MB at 5K. Returned AddRef'd; null if the image
+// can't have one (MSAA, arrays, mips, over the 16384 limit at 8K, out of memory). After a failed creation
+// nothing is created for 10 s (instead of trying again on every draw of the popup).
+static UINT StandInSize(UINT image, UINT buffer, UINT logical) {
+    return logical ? (UINT)RatioUp((long)image, Ratio{(int64_t)buffer, (int64_t)logical}) : 0;
+}
 
-static ID3D11ShaderResourceView* UiStandIn(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* gameSrv,
-                                           ID3D11Texture2D* img, Ratio k) {
+static const ULONGLONG kStandInRetryMs = 10000;
+
+ID3D11ShaderResourceView* WrappedDevice::UiStandIn(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* gameSrv,
+                                                   ID3D11Texture2D* img, const UiState& s) {
+    ULONGLONG now = GetTickCount64(), failedAt = m_standInFailedAt;
+    if (failedAt && now - failedAt < kStandInRetryMs) return nullptr;
     D3D11_TEXTURE2D_DESC d;
     img->GetDesc(&d);
-    UINT w = (UINT)RatioUp((long)d.Width, k), h = (UINT)RatioUp((long)d.Height, k);
-    if (d.SampleDesc.Count != 1 || d.ArraySize != 1 || d.MipLevels != 1 || w > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-        h > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd;
+    gameSrv->GetDesc(&vd);
+    if (d.SampleDesc.Count != 1 || d.ArraySize != 1 || d.MipLevels != 1 || vd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D)
         return nullptr;
-    ID3D11Texture2D* tex = nullptr;
-    ID3D11ShaderResourceView* srv = nullptr;
-    UINT size = sizeof(tex);
-    if (SUCCEEDED(img->GetPrivateData(kUiStandInTexGuid, &size, &tex)) && tex) {
-        D3D11_TEXTURE2D_DESC td;
-        tex->GetDesc(&td);
-        size = sizeof(srv);
-        if (td.Width == w && td.Height == h) img->GetPrivateData(kUiStandInSrvGuid, &size, &srv);
+    UINT w = StandInSize(d.Width, s.bw, s.lw), h = StandInSize(d.Height, s.bh, s.lh);
+    if (!w || !h || w > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || h > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true))
+            Log("ui: a %ux%u stand-in would be over the %u limit: popup backdrops stay magnified", w, h,
+                (unsigned)D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION);
+        return nullptr;
     }
-    if (!srv) {
-        if (tex) tex->Release(), tex = nullptr;
-        D3D11_SHADER_RESOURCE_VIEW_DESC vd;
-        gameSrv->GetDesc(&vd);
-        if (vd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) return nullptr;
+    AcquireSRWLockExclusive(&m_standInLock);
+    StandIn* e = nullptr;
+    for (StandIn& c : m_standIns)
+        if (c.srv && c.w == w && c.h == h && c.texFmt == d.Format && c.viewFmt == vd.Format) e = &c;
+    if (!e) {
+        StandIn* slot = &m_standIns[0];  // a free slot, or the least recently used one
+        for (StandIn& c : m_standIns)
+            if (!c.srv || c.lastUse < slot->lastUse) slot = &c;
+        ReleaseStandIn(slot, "replaced");
         D3D11_TEXTURE2D_DESC nd = d;
         nd.Width = w, nd.Height = h, nd.MipLevels = 1;
         nd.Usage = D3D11_USAGE_DEFAULT, nd.BindFlags = D3D11_BIND_SHADER_RESOURCE, nd.CPUAccessFlags = 0, nd.MiscFlags = 0;
-        if (FAILED(dev->CreateTexture2D(&nd, nullptr, &tex))) return nullptr;
-        vd.Texture2D.MostDetailedMip = 0, vd.Texture2D.MipLevels = 1;
-        if (FAILED(dev->CreateShaderResourceView(tex, &vd, &srv))) return tex->Release(), nullptr;
-        img->SetPrivateDataInterface(kUiStandInTexGuid, tex);
-        img->SetPrivateDataInterface(kUiStandInSrvGuid, srv);
-        static std::atomic<bool> logged{false};
-        if (!logged.exchange(true))
-            Log("ui: %ux%u fmt=%d texture drawn by the UI as an image; the UI gets a %ux%u copy of it", d.Width, d.Height,
-                (int)d.Format, w, h);
+        D3D11_SHADER_RESOURCE_VIEW_DESC nvd = vd;
+        nvd.Texture2D.MostDetailedMip = 0, nvd.Texture2D.MipLevels = 1;
+        HRESULT hr = m_real->CreateTexture2D(&nd, nullptr, &slot->tex);
+        if (SUCCEEDED(hr)) hr = m_real->CreateShaderResourceView(slot->tex, &nvd, &slot->srv);
+        if (FAILED(hr)) {
+            ReleaseStandIn(slot, nullptr);
+            m_standInFailedAt = now;
+            ReleaseSRWLockExclusive(&m_standInLock);
+            Log("ui: a %ux%u stand-in could not be created (0x%08lx): popup backdrops stay magnified, retried in 10 s", w,
+                h, hr);
+            return nullptr;
+        }
+        slot->w = w, slot->h = h, slot->texFmt = d.Format, slot->viewFmt = vd.Format;
+        long long made = ++Counters().standInsMade;
+        if (made <= 3 || made % 50 == 0)
+            Log("ui: popup stand-in %ux%u fmt=%d (%.0f MB) for a %ux%u image the UI draws (#%lld)", w, h, (int)d.Format,
+                (double)w * h * 4 / (1024 * 1024), d.Width, d.Height, made);
+        e = slot;
     }
+    if (failedAt) m_standInFailedAt = 0;
+    e->lastUse = now;
+    ID3D11Texture2D* tex = e->tex;  // kept alive by the view below
+    ID3D11ShaderResourceView* srv = e->srv;
+    srv->AddRef();
+    ReleaseSRWLockExclusive(&m_standInLock);
     ctx->CopySubresourceRegion(tex, 0, 0, 0, 0, img, 0, nullptr);
-    tex->Release();  // kept alive by img's private data
     return srv;
+}
+
+void WrappedDevice::ReleaseStandIn(StandIn* e, const char* why) {
+    if (e->srv && why) {
+        long long n = Counters().standInsMade;
+        if (n <= 3 || n % 50 == 0) Log("ui: popup stand-in %ux%u released (%s)", e->w, e->h, why);
+    }
+    if (e->srv) e->srv->Release();
+    if (e->tex) e->tex->Release();
+    *e = StandIn{};
+}
+
+void WrappedDevice::ReleaseStandIns(ULONGLONG unusedForMs) {
+    ULONGLONG now = GetTickCount64();
+    AcquireSRWLockExclusive(&m_standInLock);
+    for (StandIn& c : m_standIns)
+        if (c.srv && now - c.lastUse >= unusedForMs) ReleaseStandIn(&c, unusedForMs ? "unused for 5 s" : nullptr);
+    ReleaseSRWLockExclusive(&m_standInLock);
 }
 
 // The UI draws a backdrop with coordinates 0..1 in the first frame its element exists, and with logical /
@@ -241,7 +287,7 @@ static bool UiEstablishedDraw(ID3D11Resource* img) {
     UiDrawCount c = {};
     UINT size = sizeof(c);
     if (FAILED(img->GetPrivateData(kUiDrawCountGuid, &size, &c)) || size != sizeof(c)) c = {};
-    LONG64 f = g_totalFrames;
+    LONG64 f = Counters().gameFrames;
     uint32_t gen = UiStateGeneration();
     if (c.frame != f) {
         bool continues = c.frame == f - 1 || (c.frame && c.generation != gen);
@@ -256,7 +302,10 @@ static bool UiEstablishedDraw(ID3D11Resource* img) {
 
 // Before each indexed draw: learn the UI's vertex shader (rule 1 draws), or, for an established UI draw onto a
 // screen-sized target that samples a screen-sized image, bind rule 3's stand-in at slot 0. True if UiAfterDraw
-// must put the game's texture back. The slot-0 texture is looked at once per bind (PSSetShaderResources).
+// must put the game's texture back.
+//
+// Slot 0 is read from the context, not tracked from PSSetShaderResources: D3D11 unbinds a view by itself when
+// its texture is bound as a render target (the backdrop image is one), and the game may then free it.
 bool WrappedContext::UiBeforeDraw() {
     if (!m_vs || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen)) return false;
     if (!m_vsHashKnown) m_vsHash = ShaderHash(m_vs), m_vsHashKnown = true;
@@ -264,34 +313,32 @@ bool WrappedContext::UiBeforeDraw() {
         if (m_uiVpSwapped) LearnUiVs(m_vsHash);
         return false;
     }
-    if (!m_ps0 || !IsUiVs(m_vsHash)) return false;
-    if (!m_ps0Known) {
-        m_ps0Known = true;
-        m_ps0Copy = nullptr;
-        UiState s = UiSnapshot();
-        ID3D11Resource* r = nullptr;
-        m_ps0->GetResource(&r);
-        ID3D11Texture2D* t = nullptr;
-        if (r && SUCCEEDED(r->QueryInterface(IID_PPV_ARGS(&t)))) {
-            D3D11_TEXTURE2D_DESC d;
-            t->GetDesc(&d);
-            if (d.Width == s.bw && d.Height == s.bh && (d.BindFlags & D3D11_BIND_RENDER_TARGET)) m_ps0Copy = r;
-            t->Release();
-        }
-        if (r) r->Release();  // the bound view keeps it alive while m_ps0Copy is used
-    }
-    if (!m_ps0Copy || FixOn("nouivp")) return false;
+    if (!IsUiVs(m_vsHash)) return false;
     UiState s = UiSnapshot();
     if (!s.active) return false;
+    ID3D11ShaderResourceView* v = nullptr;
+    m_real->PSGetShaderResources(0, 1, &v);  // AddRef'd
+    if (!v) return false;
+    UiClassCache c = UiViewClass(v, false, s);
+    ID3D11Resource* img = nullptr;  // a texture: UiViewClass classified it
+    if (c.cls == kUiScreen && c.renderTarget && !FixOn("nouivp")) v->GetResource(&img);
+    if (!img) {
+        v->Release();
+        return false;
+    }
     m_uiImageDraw = true;
-    if (!UiEstablishedDraw(m_ps0Copy)) return false;
+    ++Counters().imageDraws;
     ID3D11ShaderResourceView* standIn =
-        UiStandIn(m_device->Real(), m_real, m_ps0, static_cast<ID3D11Texture2D*>(m_ps0Copy), s.k);
-    if (!standIn) return false;
-    m_ps0->AddRef();  // the context drops its reference when the stand-in is bound; keep the game's view alive
-    m_uiSavedPs0 = m_ps0;
+        UiEstablishedDraw(img) ? m_device->UiStandIn(m_real, v, static_cast<ID3D11Texture2D*>(img), s) : nullptr;
+    img->Release();
+    if (!standIn) {
+        v->Release();
+        return false;
+    }
+    ++Counters().standInDraws;
+    m_uiSavedPs0 = v;  // keeps our reference: the context drops its own while the stand-in is bound
     m_real->PSSetShaderResources(0, 1, &standIn);
-    standIn->Release();  // bound now; also kept by the image's private data
+    standIn->Release();  // the context holds it while bound
     return true;
 }
 
@@ -364,15 +411,6 @@ void STDMETHODCALLTYPE WrappedContext::VSSetShader(ID3D11VertexShader* pVertexSh
     if (pVertexShader != m_vs) m_vs = pVertexShader, m_vsHashKnown = false;
 }
 
-void STDMETHODCALLTYPE WrappedContext::PSSetShaderResources(UINT StartSlot, UINT NumViews,
-                                                           ID3D11ShaderResourceView* const* ppShaderResourceViews) {
-    m_real->PSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
-    if (StartSlot == 0 && NumViews) {
-        ID3D11ShaderResourceView* v = ppShaderResourceViews ? ppShaderResourceViews[0] : nullptr;
-        if (v != m_ps0) m_ps0 = v, m_ps0Known = false;
-    }
-}
-
 // ---------------------------------------------------------------- actions
 
 // Arguments are only formatted while a trace is active.
@@ -428,10 +466,11 @@ void WrappedContext::UiCheckImageDraw(UINT indexCount, UINT startIndex, INT base
     if (ib) ib->Release();
     if (uvMax < 0) return;
     bool wantStandIn = uvMax < 0.99f;
+    long long frame = Counters().gameFrames;
     if (wantStandIn == standIn) {
-        if (agreed++ < 12) Log("ui check frame %lld: image draw uv max %g, stand-in %d: agrees", (long long)g_totalFrames, uvMax, standIn);
+        if (agreed++ < 12) Log("ui check frame %lld: image draw uv max %g, stand-in %d: agrees", frame, uvMax, standIn);
     } else if (disagreed++ < 100) {
-        Log("ui check frame %lld: image draw uv max %g, stand-in %d: DISAGREES", (long long)g_totalFrames, uvMax, standIn);
+        Log("ui check frame %lld: image draw uv max %g, stand-in %d: DISAGREES", frame, uvMax, standIn);
     }
 }
 

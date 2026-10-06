@@ -40,52 +40,23 @@
   Yes 1988,1136 > top bar EXIT 2400,22 > Yes 1988,1136.
 
 ## Game-folder changes
-Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-10-05 test builds were not kept.
-- Deploys of dev and release builds: 2026-10-02 40, 2026-10-04 15, 2026-10-05 24 file copies (d3d11.dll, dxgi.dll, Uninstall Goh4kMod.bat).
-- Every uninstall ended with "folder matches the baseline (26 files)": 2026-10-02 03:05, 2026-10-02 12:15, 2026-10-02 14:12, 2026-10-02 15:54, 2026-10-04 02:08, 2026-10-04 03:07, 2026-10-04 03:18.
-- Installed now (2.0 release, the same files as build\release\Goh4kMod-2.0.zip):
-  - 2026-10-05 12:09 deploy: d3d11.dll sha256 2F54ED25D0BF (replaced our previous build)
-  - 2026-10-05 12:09 deploy: dxgi.dll sha256 051C1351B0F7 (replaced our previous build)
-  - 2026-10-05 12:09 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
-- 2026-10-05 13:04 deploy: d3d11.dll sha256 C43FB1999DE3 (replaced our previous build)
-- 2026-10-05 13:04 deploy: dxgi.dll sha256 48B55676D70C (replaced our previous build)
-- 2026-10-05 13:13 deploy: d3d11.dll sha256 273188C649DD (replaced our previous build)
-- 2026-10-05 13:13 deploy: dxgi.dll sha256 25EBD7089CE9 (replaced our previous build)
-- 2026-10-05 13:29 deploy: d3d11.dll sha256 927ED57FDA24 (replaced our previous build)
-- 2026-10-05 13:29 deploy: dxgi.dll sha256 04BB14F603EE (replaced our previous build)
-- 2026-10-05 13:36 deploy: d3d11.dll sha256 DF6AE6A56987 (replaced our previous build)
-- 2026-10-05 13:36 deploy: dxgi.dll sha256 F6DEB26B7391 (replaced our previous build)
-- 2026-10-05 13:36 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
-- 2026-10-05 14:10 deploy: d3d11.dll sha256 927ED57FDA24 (replaced our previous build)
-- 2026-10-05 14:10 deploy: dxgi.dll sha256 04BB14F603EE (replaced our previous build)
-- 2026-10-05 14:14 uninstall: removed d3d11.dll
-- 2026-10-05 14:14 uninstall: removed dxgi.dll
-- 2026-10-05 14:14 uninstall: removed goh4k.log
-- 2026-10-05 14:14 uninstall: removed Uninstall Goh4kMod.bat
-- 2026-10-05 14:14 uninstall check: folder matches the baseline (26 files)
-- 2026-10-05 14:15 deploy: d3d11.dll sha256 927ED57FDA24 (new file)
-- 2026-10-05 14:15 deploy: dxgi.dll sha256 04BB14F603EE (new file)
-- 2026-10-05 14:17 uninstall: removed d3d11.dll
-- 2026-10-05 14:17 uninstall: removed dxgi.dll
-- 2026-10-05 14:17 uninstall check: folder matches the baseline (26 files)
-- 2026-10-05 14:18 deploy: d3d11.dll sha256 DF6AE6A56987 (new file)
-- 2026-10-05 14:18 deploy: dxgi.dll sha256 F6DEB26B7391 (new file)
-- 2026-10-05 14:18 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (new file)
-- 2026-10-05 15:06 deploy: d3d11.dll sha256 927ED57FDA24 (replaced our previous build)
-- 2026-10-05 15:06 deploy: dxgi.dll sha256 04BB14F603EE (replaced our previous build)
-- 2026-10-05 15:24 deploy: d3d11.dll sha256 2C105BA2FCC4 (replaced our previous build)
-- 2026-10-05 15:24 deploy: dxgi.dll sha256 77DC4A0609E3 (replaced our previous build)
-- 2026-10-05 15:27 deploy: d3d11.dll sha256 6962665166CD (replaced our previous build)
-- 2026-10-05 15:27 deploy: dxgi.dll sha256 77DC4A0609E3 (replaced our previous build)
-- 2026-10-05 15:31 deploy: d3d11.dll sha256 506C6936A7A8 (replaced our previous build)
-- 2026-10-05 15:31 deploy: dxgi.dll sha256 77DC4A0609E3 (replaced our previous build)
-- 2026-10-05 15:36 deploy: d3d11.dll sha256 BE8D10E8D3C4 (replaced our previous build)
-- 2026-10-05 15:36 deploy: dxgi.dll sha256 725C3438A596 (replaced our previous build)
-- 2026-10-05 15:42 deploy: d3d11.dll sha256 0FAD424F5935 (replaced our previous build)
-- 2026-10-05 15:42 deploy: dxgi.dll sha256 697E0596C430 (replaced our previous build)
-- 2026-10-05 15:44 deploy: d3d11.dll sha256 BC6EB6E7A5D1 (replaced our previous build)
-- 2026-10-05 15:44 deploy: dxgi.dll sha256 5C1911C88572 (replaced our previous build)
-- 2026-10-05 15:44 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (replaced our previous build)
+Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later test builds were not kept.
+- Deploys of dev and release builds: 2026-10-02 40, 2026-10-04 15, 2026-10-05 83 file copies (d3d11.dll, dxgi.dll, Uninstall Goh4kMod.bat).
+- Every uninstall ended with "folder matches the baseline (26 files)": 2026-10-02 03:05, 2026-10-02 12:15, 2026-10-02 14:12, 2026-10-02 15:54, 2026-10-04 02:08, 2026-10-04 03:07, 2026-10-04 03:18, 2026-10-05 14:14, 2026-10-05 14:17.
+- Installed at the time of this summary: the 2.1 release (build\release\Goh4kMod-2.1.zip, 2026-10-05 19:42). Later deploys follow:
+- 2026-10-05 20:24 uninstall: removed d3d11.dll
+- 2026-10-05 20:24 uninstall: removed dxgi.dll
+- 2026-10-05 20:24 uninstall: removed goh4k.log
+- 2026-10-05 20:24 uninstall: removed Uninstall Goh4kMod.bat
+- 2026-10-05 20:24 uninstall check: folder matches the baseline (26 files)
+- 2026-10-05 20:24 deploy: d3d11.dll sha256 C977E391B79A (new file)
+- 2026-10-05 20:24 deploy: dxgi.dll sha256 61E37C56C576 (new file)
+- 2026-10-05 20:28 uninstall: removed d3d11.dll
+- 2026-10-05 20:28 uninstall: removed dxgi.dll
+- 2026-10-05 20:28 uninstall check: folder matches the baseline (26 files)
+- 2026-10-05 20:28 deploy: d3d11.dll sha256 514FB46DCC99 (new file)
+- 2026-10-05 20:28 deploy: dxgi.dll sha256 D23886FCBDAC (new file)
+- 2026-10-05 20:28 deploy: Uninstall Goh4kMod.bat sha256 87F36EB430A2 (new file)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -513,3 +484,62 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); the 2026-
   re-syncs (no texture choice is right for that frame).
 - Bursts after the fix (dev and release): main-menu Exit and Options, Esc menu, Exit confirm x3, Options
   over the Game Menu, YES back to the menu, 1440p Exit prompt: no intermediate frame, no top-left copy.
+
+### 2026-10-05 2.1 sturdiness (PLAN.md 2.1; Ethan: A, B1 overlays, C, D, E; none of the decisions)
+- **Bugs fixed, each with a proxytest case that fails on the 2.0 build (bad9465, worktree run) and passes now:**
+  - Rule 3 trusted the last PSSetShaderResources: D3D11 unbinds a view by itself when its texture becomes a
+    render target, and 2.0 then put that stale view back after its stand-in draw (and would touch it once
+    the game freed it). Slot 0 is now read back from the context.
+  - A hook that couldn't be made left the mod half on (WM_SIZE converted, mouse real) and WM_MOVE called a
+    null pointer. Now all or nothing (child-process test with a forced GetClientRect failure).
+  - A destroyed game window kept the factor (2.0 test: cursor 1028,597 for the real 2056,1194) and a new
+    window wasn't followed. WM_NCDESTROY now resets; the next swapchain's window is followed.
+  - A replaced window procedure went unnoticed; now put back and resynced. Found on the way: a resync that
+    reached the other procedure kept "one queued" forever; it now counts for 2 s only.
+  - Small: registered resync message, rule 3 counts only the game window's Presents, 4 MB log cap.
+- **Overlays (B1):** a hook check every 2 s. The Steam overlay patches over 5 of our hooks after us
+  (`input hooks: 5 of 11 patched over`). Its GetCursorPos jumps on (538 of 551 calls with the game's return
+  address, converted); its GetMessageW calls us (stack: overlay, overlay, call_to_arms.exe), so message
+  coordinates stay real with the overlay on: harmless, the game reads the mouse with GetCursorPos (all
+  sessions ran with the overlay). Not "fixed" (the overlay's own window would get logical coordinates);
+  clicking inside the overlay works. A removed patch on a converting hook switches the mod off.
+- **Screens narrower than 16:9 (C1):** k = min(w/1920, h/1080). In game: 2560x1600 fullscreen -> 4/3,
+  logical 1920x1200, menus and the Exit prompt right (stand-in 3414x2134, captures/v21/12-13); 1920x1200 ->
+  not scaled (was 10/9). 3840x2160 back afterwards.
+- **Stand-in (C3):** shared per size/format, released 5 s after the last popup draw (log: created at the
+  prompt, `released (unused for 5 s)`), and with the swapchain (it holds the device).
+- **Borderless (A5):** with Resolution 2560x1440 the game still renders at the desktop size (buffers
+  3840x2160), so buffers never differ from the window; stand-in size is buffer² / logical anyway.
+- **Preset sweep (C2):** Ethan's custom, Minimum, Medium, Maximum in a mission (Absolute zero), captures and
+  traces (now with `game-vp=` where a rule changed the viewport). Visuals right in all four. After an
+  in-game apply the game sizes ~1100 full-screen draws per frame from the client size (15 after a fresh
+  start); rule 2 restores all; no draw anywhere has a viewport smaller than its target; no scissoring.
+  An MSAA change recreates the swapchain: one frame of magnified popup backdrop (dev self-check), like a
+  resolution switch (NOTES known limits).
+- **Logs (D2):** game build vs the verified one (stamp 6ab3dcc7), unconverted coordinate imports (none),
+  health line, hook-layer lines, session summary at unload. The game calls mouse_event every 10 s with a
+  relative +-1 px nudge (dev logging): nothing to convert.
+- **Update check (D3):** src/scripts/update-check.ps1; the session briefing flags a changed exe.
+- Docs: NOTES (assumptions table, History 12-15, playbook step 0, limits), README troubleshooting, CLAUDE.md.
+- Update check runs: the first (references) showed the script's own bug: Esc plus a centre click in its
+  intro-skip loop opened the Game Menu in the mission and hit RESTART (profile restored, no harm). The loop
+  now uses only Space and CONTINUE's corner. Rerun: 15 of 15 PASS (menu 46.9 dB, prompt 51.3 dB, 0 of 253
+  odd burst frames, options, mission menu, all log checks, profile byte-identical).
+- Version 2.1 (version.rc, package, log line, README). proxytest PASSED, test-gamefolder PASSED.
+  Release 2.1 deployed and checked: 10 of 10 hooks, health line, the Exit prompt correct, stand-in released
+  after 5 s, session summary. Ethan's profile byte-identical to the session-start backup
+  (scratch/settings-backup/profile-2026-10-05-v21).
+- Cleanup pass (/simplify): one view-class cache for rules 1-3; slot 0 read back with no
+  PSSetShaderResources override; one stand-in release path; one module and exe-header helper; hook counts
+  only while measuring (patched-over count in the health line); the answered dev-only probes removed (10
+  hooks in every build); one off switch; update-check.ps1 on gamefolder-common.ps1. Update check 15/15.
+- Code-review fixes (Ethan: items 1-9):
+  - update-check.ps1 puts back exactly what was installed (nothing -> uninstall.cmd, newest release ->
+    deploy -Release, dev -> as is, other -> FAIL line) and the whole profiles folder, in a finally block.
+  - Subclassing stores the next procedure before ours goes in (a message could arrive in between).
+  - A newer game window that appears while the current one exists is followed once that one is destroyed.
+  - Shut-off is atomic: an off bit in the state word, so a WM_SIZE on another thread cannot store k > 1 again.
+  - The import scan in DllMain is bounds-checked against the image and runs under SEH.
+  - Past the 4 MB log cap, WARNING lines and the session summary still go in (64 KB reserve).
+  - Stand-in creation failure: an atomic time, retried after 10 s; the 8K size limit no longer blocks others.
+  - This file: today's deploy lines condensed into the game-folder summary.

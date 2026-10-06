@@ -24,10 +24,11 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) 
     }
     Log("swapchain wrapped: real=%p IDXGISwapChain%d", real, m_level);
     LogState("created");
+    DXGI_SWAP_CHAIN_DESC d = {};
+    m_real->GetDesc(&d);
+    m_hwnd = d.OutputWindow;
     if (UiScaleConfigured()) {
-        DXGI_SWAP_CHAIN_DESC d = {};
-        m_real->GetDesc(&d);
-        SubclassGameWindow(d.OutputWindow);
+        SubclassGameWindow(m_hwnd);
         UpdateUiScale("new swapchain");
     }
 }
@@ -35,23 +36,19 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) 
 // The factor follows the window's real client size, the full-screen rules its buffer size (scale.h). Only
 // the game window's swapchain counts. Called from our module, so GetClientRect isn't converted.
 void WrappedSwapChain::UpdateUiScale(const char* why) {
-    if (!UiScaleConfigured()) return;
+    if (!UiScaleConfigured() || !IsGameWindow(m_hwnd)) return;
     DXGI_SWAP_CHAIN_DESC d = {};
     m_real->GetDesc(&d);
-    if (!IsGameWindow(d.OutputWindow)) return;
     SetUiBuffer(d.BufferDesc.Width, d.BufferDesc.Height);
     RECT r = {};
-    if (GetClientRect(d.OutputWindow, &r) && !IsIconic(d.OutputWindow))
-        SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(d.OutputWindow, r.right, r.bottom), why);
+    if (GetClientRect(m_hwnd, &r) && !IsIconic(m_hwnd))
+        SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(m_hwnd, r.right, r.bottom), why);
 }
 
 // The game's own mode change (input.h NotifyGameWindowSizeChanged). Not after ResizeBuffers: the game calls
 // that in answer to WM_SIZE, so a resync there would loop.
 void WrappedSwapChain::ResyncAfterModeChange() {
-    if (!UiScaleActive()) return;
-    DXGI_SWAP_CHAIN_DESC d = {};
-    m_real->GetDesc(&d);
-    if (IsGameWindow(d.OutputWindow)) NotifyGameWindowSizeChanged();
+    if (UiScaleActive() && IsGameWindow(m_hwnd)) NotifyGameWindowSizeChanged();
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::QueryInterface(REFIID riid, void** ppv) {
@@ -82,6 +79,9 @@ ULONG STDMETHODCALLTYPE WrappedSwapChain::Release() {
     ULONG r = m_real->Release();
     if (r == 0) {
         Log("swapchain released after %lld frames", (long long)m_frames);
+        // The real swapchain held the device until now, so our device wrapper is still alive. Its stand-ins hold
+        // the device too: let them go, or the game's own release of the device would never reach zero.
+        if (m_device) m_device->ReleaseStandIns(0);
         delete this;
     }
     return r;
@@ -107,6 +107,17 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::Present1(UINT SyncInterval, UINT Pre
     return hr;
 }
 
+// One line after the game window's first Present (and its first hook check): is everything the mod needs in
+// place?
+static void LogHealth() {
+    UiState s = UiSnapshot();
+    int over = InputHooksPatchedOver();
+    std::string patched = over ? Fmt(" (%d patched over by another program)", over) : std::string();
+    Log("health: input hooks %d%s, game window followed, swapchain wrapped; client %ux%u%s, buffers %ux%u, k %lld/%lld%s",
+        InputHooksInstalled(), patched.c_str(), s.cw, s.ch, s.covers ? " (covers its monitor)" : "", s.bw, s.bh, s.k.n,
+        s.k.d, UiScaleConfigured() ? "" : "; native scaling is off");
+}
+
 void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     if (flags & DXGI_PRESENT_TEST) return;
     ++m_frames;
@@ -119,6 +130,20 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     }
     if (m_frames == 1) LogState("first Present");
     ULONGLONG now = GetTickCount64();
+    bool game = IsGameWindow(m_hwnd);
+    if (game && !m_followed) UpdateUiScale("game window followed");  // its buffers too, after a window change
+    m_followed = game;
+    if (game) {
+        ++Counters().gameFrames;
+        if (UiScaleActive()) ++Counters().framesScaled;
+        if (now - m_checkTick >= 2000) {
+            bool first = !m_checkTick;
+            m_checkTick = now;
+            CheckGameWindow();
+            if (m_device) m_device->ReleaseStandIns(WrappedDevice::kStandInIdleMs);
+            if (first) LogHealth();
+        }
+    }
     if (g_cfg.diagnostics && now - m_statusTick >= (ULONGLONG)g_cfg.statusMs) WriteStatus(now);
 }
 

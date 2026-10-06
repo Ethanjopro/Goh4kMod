@@ -53,19 +53,219 @@ static void CheckRatioMath() {
             CHECK(oldFormula == 0, "ratio %lld/1: identical to the 1.0 floor/multiply (%d differences)", r.n, oldFormula);
         CHECK(clip == 0, "ratio %lld/%lld: ClipCursor edges cover exactly the logical rect (%d misses)", r.n, r.d, clip);
     }
-    Ratio a = RatioForHeight(2160, 1080), b = RatioForHeight(1440, 1080), c = RatioForHeight(2880, 1080),
-          e = RatioForHeight(1080, 1080), f = RatioForHeight(768, 1080);
-    CHECK(a.n == 2 && a.d == 1 && b.n == 4 && b.d == 3 && c.n == 8 && c.d == 3 && e.n == 1 && e.d == 1 && f.n == 1 &&
-              f.d == 1,
-          "ratio for heights 2160/1440/2880/1080/768: %lld/%lld %lld/%lld %lld/%lld %lld/%lld %lld/%lld", a.n, a.d, b.n, b.d,
-          c.n, c.d, e.n, e.d, f.n, f.d);
+    // The factor per screen: the logical screen is never smaller than 1920x1080 on either axis.
+    struct Case {
+        uint32_t w, h;
+        int64_t n, d;
+        long lw, lh;
+    };
+    const Case cases[] = {
+        {3840, 2160, 2, 1, 1920, 1080}, {2560, 1440, 4, 3, 1920, 1080}, {5120, 2880, 8, 3, 1920, 1080},
+        {3200, 1800, 5, 3, 1920, 1080}, {7680, 4320, 4, 1, 1920, 1080}, {3440, 1440, 4, 3, 2580, 1080},
+        {5120, 1440, 4, 3, 3840, 1080}, {3840, 1600, 40, 27, 2592, 1080}, {2560, 1600, 4, 3, 1920, 1200},
+        {3840, 2400, 2, 1, 1920, 1200}, {2048, 1536, 16, 15, 1920, 1440}, {2160, 3840, 9, 8, 1920, 3413},
+        {1920, 1200, 1, 1, 1920, 1200}, {2560, 1080, 1, 1, 2560, 1080}, {1920, 1080, 1, 1, 1920, 1080},
+        {1366, 768, 1, 1, 1366, 768},
+    };
+    int wrong = 0;
+    for (const Case& c : cases) {
+        Ratio k = RatioForScreen(c.w, c.h, 1920, 1080);
+        long lw = RatioDown((long)c.w, k), lh = RatioDown((long)c.h, k);
+        if (k.n != c.n || k.d != c.d || lw != c.lw || lh != c.lh) {
+            ++wrong;
+            printf("      %ux%u: k %lld/%lld -> %ldx%ld, expected %lld/%lld -> %ldx%ld\n", c.w, c.h, k.n, k.d, lw, lh, c.n,
+                   c.d, c.lw, c.lh);
+        }
+    }
+    CHECK(wrong == 0, "factor table: %d screens (16:9, 16:10, ultrawide, 32:9, 4:3, portrait, 1080p-class): %d wrong",
+          (int)(sizeof(cases) / sizeof(cases[0])), wrong);
 }
 
-int main() {
-    CheckRatioMath();
-    wchar_t dir[MAX_PATH];
-    GetModuleFileNameW(nullptr, dir, MAX_PATH);
+static LPARAM g_lastSize = 0;  // the last WM_SIZE the test window's own procedure saw
+static LRESULT CALLBACK TestWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_SIZE) g_lastSize = l;
+    return DefWindowProcW(h, m, w, l);
+}
+
+// The primary monitor's size in real pixels (the test is per-monitor DPI aware through the proxy).
+static void ScreenSize(int* w, int* h) {
+    HDC dc = GetDC(nullptr);
+    *w = GetDeviceCaps(dc, HORZRES), *h = GetDeviceCaps(dc, VERTRES);
+    ReleaseDC(nullptr, dc);
+}
+
+static void Pump() {
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+typedef HRESULT(WINAPI* PFN_Compile)(LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**,
+                                     ID3DBlob**);
+
+static ID3DBlob* Compile(const char* src, const char* target) {
+    static PFN_Compile compile = (PFN_Compile)GetProcAddress(LoadLibraryW(L"d3dcompiler_47.dll"), "D3DCompile");
+    ID3DBlob *code = nullptr, *err = nullptr;
+    if (compile) compile(src, strlen(src), nullptr, nullptr, nullptr, "main", target, 0, 0, &code, &err);
+    if (err) err->Release();
+    return code;
+}
+
+// Rule 3 must read pixel-shader slot 0 back from the context. D3D11 unbinds a view by itself when its texture
+// is bound as a render target; trusting the last PSSetShaderResources would put that stale view back after a
+// stand-in draw, or touch it after the game freed it. Needs k > 1 (the window covers a monitor above 1080p).
+static void CheckStaleSlot0(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGISwapChain* sc, UINT w, UINT h) {
+    ID3DBlob* vsb = Compile("float4 main(uint id : SV_VertexID) : SV_Position {"
+                            " return float4((id & 1) * 2.0 - 1, (id >> 1) * 2.0 - 1, 0, 1); }",
+                            "vs_4_0");
+    ID3DBlob* psb = Compile("Texture2D t : register(t0);"
+                            " float4 main(float4 p : SV_Position) : SV_Target { return t.Load(int3(0, 0, 0)); }",
+                            "ps_4_0");
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader* ps = nullptr;
+    if (vsb) dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &vs);
+    if (psb) dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &ps);
+    if (vsb) vsb->Release();
+    if (psb) psb->Release();
+    auto target = [&](UINT tw, UINT th, ID3D11Texture2D** t, ID3D11RenderTargetView** rtv, ID3D11ShaderResourceView** srv) {
+        D3D11_TEXTURE2D_DESC td = {tw, th, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                                   D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0, 0};
+        *t = nullptr, *rtv = nullptr;
+        if (srv) *srv = nullptr;
+        if (FAILED(dev->CreateTexture2D(&td, nullptr, t))) return;
+        dev->CreateRenderTargetView(*t, nullptr, rtv);
+        if (srv) dev->CreateShaderResourceView(*t, nullptr, srv);
+    };
+    ID3D11Texture2D *label, *screen, *img;
+    ID3D11RenderTargetView *labelRtv, *screenRtv, *imgRtv;
+    ID3D11ShaderResourceView* imgSrv;
+    target(256, 256, &label, &labelRtv, nullptr);
+    target(w, h, &screen, &screenRtv, nullptr);
+    target(w, h, &img, &imgRtv, &imgSrv);
+    const UINT16 idx[6] = {0, 1, 2, 2, 1, 3};
+    D3D11_BUFFER_DESC bd = {sizeof(idx), D3D11_USAGE_DEFAULT, D3D11_BIND_INDEX_BUFFER, 0, 0, 0};
+    D3D11_SUBRESOURCE_DATA init = {idx, 0, 0};
+    ID3D11Buffer* ib = nullptr;
+    dev->CreateBuffer(&bd, &init, &ib);
+    if (!vs || !ps || !labelRtv || !screenRtv || !imgRtv || !imgSrv || !ib) {
+        printf("note  shaders or targets for the slot-0 check unavailable (d3dcompiler_47?): skipped\n");
+    } else {
+        ctx->IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vs, nullptr, 0);
+        ctx->PSSetShader(ps, nullptr, 0);
+        D3D11_VIEWPORT full = {0, 0, (float)w, (float)h, 0, 1};
+        // The UI's shader is learnt from a label-surface draw with the real-screen viewport (rule 1).
+        ctx->OMSetRenderTargets(1, &labelRtv, nullptr);
+        ctx->RSSetViewports(1, &full);
+        ctx->DrawIndexed(6, 0, 0);
+        // Two frames of the UI drawing the image on a screen-sized target: the second draw gets the stand-in.
+        for (int f = 0; f < 2; ++f) {
+            ctx->OMSetRenderTargets(1, &screenRtv, nullptr);
+            ctx->RSSetViewports(1, &full);
+            ctx->PSSetShaderResources(0, 1, &imgSrv);
+            ctx->DrawIndexed(6, 0, 0);
+            sc->Present(0, 0);
+        }
+        ID3D11ShaderResourceView* back = nullptr;
+        ctx->PSGetShaderResources(0, 1, &back);
+        CHECK(back == imgSrv, "slot 0: the game's own view is back after a stand-in draw");
+        if (back) back->Release(), back = nullptr;
+        // The image becomes a render target: the runtime takes it out of slot 0.
+        ctx->OMSetRenderTargets(1, &imgRtv, nullptr);
+        ctx->PSGetShaderResources(0, 1, &back);
+        bool cleared = !back;
+        if (back) back->Release(), back = nullptr;
+        ctx->OMSetRenderTargets(1, &screenRtv, nullptr);
+        ctx->DrawIndexed(6, 0, 0);
+        ctx->PSGetShaderResources(0, 1, &back);
+        if (cleared)
+            CHECK(!back, "slot 0: a view the runtime unbound stays unbound after a UI draw (%p)", (void*)back);
+        else
+            printf("note  the runtime didn't unbind slot 0, so the stale-view check is inconclusive\n");
+        if (back) back->Release(), back = nullptr;
+        // The game frees the image; the next UI draws must not touch it.
+        imgSrv->Release(), imgRtv->Release(), img->Release();
+        imgSrv = nullptr, imgRtv = nullptr, img = nullptr;
+        ctx->DrawIndexed(6, 0, 0);
+        sc->Present(0, 0);
+        ctx->DrawIndexed(6, 0, 0);
+        CHECK(true, "slot 0: UI draws after the game freed the image");
+    }
+    ctx->ClearState();
+    IUnknown* const all[] = {vs, ps, ib, labelRtv, screenRtv, imgRtv, imgSrv, label, screen, img};
+    for (IUnknown* p : all)
+        if (p) p->Release();
+}
+
+// Child process (--hookfail, with GOH4K_TEST_FAILHOOK set by the parent): one hook can't be made, so the mod
+// must stay fully off: a monitor-covering window keeps its real client size, and moving it (WM_MOVE) is safe.
+static int HookFailChild(const wchar_t* dir) {
+    wchar_t path[MAX_PATH];
+    swprintf_s(path, L"%s\\dxgi.dll", dir);
+    LoadLibraryW(path);
+    swprintf_s(path, L"%s\\d3d11.dll", dir);
+    HMODULE proxy = LoadLibraryW(path);
+    if (!proxy) return 3;
+    int realW = 0, realH = 0;
+    ScreenSize(&realW, &realH);
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = TestWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"goh4k_proxytest_child";
+    RegisterClassW(&wc);
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"proxytest child", WS_POPUP, 0, 0, realW, realH, nullptr, nullptr,
+                                wc.hInstance, nullptr);
+    DXGI_SWAP_CHAIN_DESC scd = {};
+    scd.BufferDesc.Width = 640, scd.BufferDesc.Height = 360, scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.SampleDesc.Count = 1, scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT, scd.BufferCount = 1;
+    scd.OutputWindow = hwnd, scd.Windowed = TRUE, scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    auto create = (PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN)GetProcAddress(proxy, "D3D11CreateDeviceAndSwapChain");
+    IDXGISwapChain* sc = nullptr;
+    ID3D11Device* dev = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    HRESULT hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &scd, &sc, &dev,
+                        nullptr, &ctx);
+    if (FAILED(hr)) return 4;
+    for (int i = 0; i < 5; ++i) Pump(), sc->Present(0, 0);
+    RECT cr = {};
+    GetClientRect(hwnd, &cr);
+    SetWindowPos(hwnd, nullptr, 10, 10, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);  // WM_MOVE
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    for (int i = 0; i < 5; ++i) Pump(), sc->Present(0, 0);
+    bool real = cr.right == realW && cr.bottom == realH;
+    printf("      child: client %ldx%ld for a %dx%d window, WM_MOVE survived\n", cr.right, cr.bottom, realW, realH);
+    sc->Release(), ctx->Release(), dev->Release();
+    DestroyWindow(hwnd);
+    return real ? 0 : 2;
+}
+
+int main(int argc, char** argv) {
+    wchar_t self[MAX_PATH], dir[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    wcscpy_s(dir, self);
     *wcsrchr(dir, L'\\') = 0;
+    if (argc > 1 && strcmp(argv[1], "--hookfail") == 0) return HookFailChild(dir);
+    CheckRatioMath();
+    // All or nothing: a hook that can't be made leaves the mod fully off.
+    {
+        wchar_t cmd[MAX_PATH + 32];
+        swprintf_s(cmd, L"\"%s\" --hookfail", self);
+        SetEnvironmentVariableW(L"GOH4K_TEST_FAILHOOK", L"GetClientRect");
+        STARTUPINFOW si = {sizeof(si)};
+        PROCESS_INFORMATION pi = {};
+        BOOL ok = CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+        SetEnvironmentVariableW(L"GOH4K_TEST_FAILHOOK", nullptr);
+        DWORD code = 99;
+        if (ok) {
+            WaitForSingleObject(pi.hProcess, 60000);
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
+        }
+        CHECK(ok && code == 0, "hook failure: with GetClientRect's hook missing the mod stays off (child exit %lu)", code);
+    }
     wchar_t proxyPath[MAX_PATH], dxgiPath[MAX_PATH], sysPath[MAX_PATH];
     swprintf_s(proxyPath, L"%s\\d3d11.dll", dir);
     swprintf_s(dxgiPath, L"%s\\dxgi.dll", dir);
@@ -106,7 +306,7 @@ int main() {
 
     // 2) Device + swapchain through the proxy.
     WNDCLASSW wc = {};
-    wc.lpfnWndProc = DefWindowProcW;
+    wc.lpfnWndProc = TestWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"goh4k_proxytest";
     RegisterClassW(&wc);
@@ -147,7 +347,7 @@ int main() {
     hr = factory->CreateSwapChain(dev, &scd, &sc);
     CHECK(SUCCEEDED(hr) && sc, "IDXGIFactory::CreateSwapChain with the wrapped device (0x%08lx)", hr);
     if (FAILED(hr)) return 1;
-    factory->Release();
+    // The factory stays for the second game window at the end (6).
 
     // 3) Identity and QueryInterface routing.
     ID3D11Device* fromCtx = nullptr;
@@ -285,10 +485,11 @@ int main() {
     // borderless window covering the monitor gets k = monitor height / 1080: the client size and the cursor are
     // divided by it around the client origin; buffers, textures, screen metrics and the window rect stay real.
     int uiScale = GetPrivateProfileIntW(L"proxy", L"UiScale", 1, ini);
+    bool scaled = false;  // k > 1 on this monitor
+    int realW = 0, realH = 0;
+    long lw = 0, lh = 0;
     if (uiScale == 1) {
-        HDC dc = GetDC(nullptr);
-        int realW = GetDeviceCaps(dc, HORZRES), realH = GetDeviceCaps(dc, VERTRES);
-        ReleaseDC(nullptr, dc);
+        ScreenSize(&realW, &realH);
         // Windowed: pass-through.
         RECT outer = {0, 0, 2560, 1440};  // SetWindowPos isn't hooked
         AdjustWindowRectExForDpi(&outer, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd));
@@ -304,8 +505,8 @@ int main() {
         SetWindowPos(hwnd, nullptr, 0, 0, realW, realH, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         hr = sc->ResizeBuffers(0, (UINT)realW, (UINT)realH, DXGI_FORMAT_UNKNOWN, 0);
         CHECK(SUCCEEDED(hr), "ui-scale: ResizeBuffers to the monitor's %dx%d (0x%08lx)", realW, realH, hr);
-        goh4k::Ratio k = goh4k::RatioForHeight((uint32_t)realH, 1080);
-        long lw = goh4k::RatioDown(realW, k), lh = goh4k::RatioDown(realH, k);
+        goh4k::Ratio k = goh4k::RatioForScreen((uint32_t)realW, (uint32_t)realH, 1920, 1080);
+        lw = goh4k::RatioDown(realW, k), lh = goh4k::RatioDown(realH, k);
         D3D11_TEXTURE2D_DESC td = {(UINT)realW, (UINT)realH, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
                                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0, 0};
         ID3D11Texture2D* t = nullptr;
@@ -359,20 +560,71 @@ int main() {
         RECT dr = {};
         GetClientRect(GetDesktopWindow(), &dr);
         CHECK(dr.right == realW, "ui-scale: GetClientRect of the desktop stays real (%ld)", dr.right);
-        if (k.n == k.d) printf("note  this monitor is 1080p or less, so the scaled checks above saw k = 1\n");
+        scaled = !(k.n == k.d);
+        if (!scaled) printf("note  this monitor is 1080p-class or less, so the scaled checks above saw k = 1\n");
     }
 
-    // 6) Release everything; the device must reach 0.
+    if (scaled) {
+        CheckStaleSlot0(dev, ctx, sc, (UINT)realW, (UINT)realH);
+        // Our window procedure replaced by the window's own (what a program that subclassed before us puts back):
+        // within a few seconds the mod subclasses again and resyncs the game with a logical WM_SIZE.
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&TestWndProc);
+        g_lastSize = 0;
+        for (int i = 0; i < 50 && !g_lastSize; ++i) Pump(), sc->Present(0, 0), Sleep(100);
+        CHECK((WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != &TestWndProc,
+              "window procedure: replaced, then the mod's put back in front");
+        CHECK(LOWORD(g_lastSize) == lw && HIWORD(g_lastSize) == lh, "window procedure: the resync WM_SIZE is logical (%ux%u)",
+              LOWORD(g_lastSize), HIWORD(g_lastSize));
+    }
+
+    // 6) Release everything; the device must reach 0. On the way: once the game window is destroyed nothing is
+    // converted, and the next game window (a new swapchain's) is followed.
     if (def) def->Release();
     if (sc4) sc4->Release();
     if (ctx4) ctx4->Release();
     if (dev5) dev5->Release();
     ULONG scRef = sc->Release();
+    CHECK(scRef == 0, "swapchain final Release returns 0 (%lu)", scRef);
+    DestroyWindow(hwnd);
+    if (scaled) {
+        CURSORINFO ci = {sizeof(ci)};
+        GetCursorInfo(&ci);  // not hooked
+        POINT p = {};
+        GetCursorPos(&p);
+        CHECK(p.x == ci.ptScreenPos.x && p.y == ci.ptScreenPos.y, "game window destroyed: the cursor reads real (%ld,%ld)",
+              p.x, p.y);
+        HWND hwnd2 = CreateWindowExW(0, wc.lpszClassName, L"proxytest 2", WS_POPUP, 0, 0, realW, realH, nullptr, nullptr,
+                                     wc.hInstance, nullptr);
+        scd.OutputWindow = hwnd2;
+        scd.SampleDesc.Count = 1;
+        IDXGISwapChain* sc2 = nullptr;
+        hr = factory->CreateSwapChain(dev, &scd, &sc2);
+        RECT cr = {};
+        GetClientRect(hwnd2, &cr);
+        CHECK(SUCCEEDED(hr) && cr.right == lw && cr.bottom == lh, "a new game window is followed: client %ldx%ld", cr.right,
+              cr.bottom);
+        // A game that recreates its window makes the new one (and its swapchain) before destroying the old one:
+        // the new one is followed once the old one is gone.
+        HWND hwnd3 = CreateWindowExW(0, wc.lpszClassName, L"proxytest 3", WS_POPUP, 0, 0, realW, realH, nullptr, nullptr,
+                                     wc.hInstance, nullptr);
+        scd.OutputWindow = hwnd3;
+        IDXGISwapChain* sc3 = nullptr;
+        hr = factory->CreateSwapChain(dev, &scd, &sc3);
+        GetClientRect(hwnd3, &cr);
+        CHECK(SUCCEEDED(hr) && cr.right == realW, "while the old window exists the newer one isn't followed yet (%ldx%ld)",
+              cr.right, cr.bottom);
+        if (sc2) sc2->Release();
+        DestroyWindow(hwnd2);
+        GetClientRect(hwnd3, &cr);
+        CHECK(cr.right == lw && cr.bottom == lh, "the old window destroyed: the newer one is followed (%ldx%ld)", cr.right,
+              cr.bottom);
+        if (sc3) sc3->Release();
+        DestroyWindow(hwnd3);
+    }
+    factory->Release();
     ULONG ctxRef = ctx->Release();
     ULONG devRef = dev->Release();
-    CHECK(scRef == 0, "swapchain final Release returns 0 (%lu)", scRef);
     CHECK(devRef == 0, "device final Release returns 0 (%lu, context %lu)", devRef, ctxRef);
-    DestroyWindow(hwnd);
 
     printf("%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;

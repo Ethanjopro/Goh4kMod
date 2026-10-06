@@ -5,6 +5,7 @@
 #endif
 #include <cstdarg>
 #include <cstdio>
+#include <ctime>
 #include <set>
 #include <mutex>
 
@@ -31,6 +32,12 @@ std::string Fmt(const char* fmt, ...) {
     return std::string(buf, (size_t)n < sizeof(buf) ? (size_t)n : sizeof(buf) - 1);
 }
 
+// The log stops at this size, so nothing can fill a player's disk (a normal session writes a few KB). Past it,
+// WARNING lines and the session summary still go in, up to kLogReserve more: they are what a report needs.
+static const LONG64 kLogLimit = 4 * 1024 * 1024;
+static const LONG64 kLogReserve = 64 * 1024;
+static LONG64 g_logBytes = 0;  // under g_logLock
+
 void Log(const char* fmt, ...) {
     if (g_log == INVALID_HANDLE_VALUE) return;
     char msg[2048];
@@ -45,9 +52,18 @@ void Log(const char* fmt, ...) {
     int m = snprintf(line, sizeof(line), "[%5llu.%03llu %5lu] %.*s\r\n", t / 1000, t % 1000, GetCurrentThreadId(), n, msg);
     if (m < 0) return;
     if (m >= (int)sizeof(line)) m = sizeof(line) - 1;
+    bool important = strncmp(msg, "WARNING", 7) == 0 || strncmp(msg, "session:", 8) == 0;
     AcquireSRWLockExclusive(&g_logLock);
     DWORD written;
-    WriteFile(g_log, line, (DWORD)m, &written, nullptr);
+    if (g_logBytes < kLogLimit + (important ? kLogReserve : 0)) {
+        bool under = g_logBytes < kLogLimit;
+        WriteFile(g_log, line, (DWORD)m, &written, nullptr);
+        g_logBytes += m;
+        if (under && g_logBytes >= kLogLimit) {
+            static const char kFull[] = "log size limit reached: only warnings and the session summary from here\r\n";
+            WriteFile(g_log, kFull, sizeof(kFull) - 1, &written, nullptr);
+        }
+    }
     ReleaseSRWLockExclusive(&g_logLock);
 }
 
@@ -83,6 +99,77 @@ static bool ExeAllowed(const std::wstring& list, const wchar_t* exeName) {
         start = end + 1;
     }
     return false;
+}
+
+// The game build this mod version was verified with (call_to_arms.exe's link time stamp, 2026-09-23).
+static const DWORD kVerifiedGameStamp = 0x6AB3DCC7;
+
+// user32 functions that carry the client size or mouse positions and that the mod doesn't convert. The game
+// imports none of them today; if an update starts using one, that part of the game sees real pixels.
+static const char* const kUnconverted[] = {"GetCursorInfo", "GetWindowInfo", "GetMessageA", "PeekMessageA",
+                                           "GetMessagePos", "GetPhysicalCursorPos", "GetMouseMovePointsEx",
+                                           "SendInput", "GetClipCursor", "ChildWindowFromPoint",
+                                           "ChildWindowFromPointEx"};
+
+static const int kUnconvertedCount = (int)(sizeof(kUnconverted) / sizeof(kUnconverted[0]));
+
+static bool InImage(ULONGLONG rva, DWORD n, DWORD imageSize) { return rva && rva < imageSize && n <= imageSize - rva; }
+
+// Which of kUnconverted the exe imports from user32, as bits. Runs in DllMain, so every RVA is checked against
+// the image and the whole walk is under SEH: an unusual import layout in a future game build (a packer, say)
+// must not keep the game from starting.
+static unsigned UnconvertedImports() {
+    unsigned found = 0;
+    __try {
+        const uint8_t* base = (const uint8_t*)GetModuleHandleW(nullptr);
+        const IMAGE_NT_HEADERS* nt = ExeHeaders();
+        DWORD size = nt->OptionalHeader.SizeOfImage;
+        const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if (!InImage(dir.VirtualAddress, dir.Size, size)) return 0;
+        auto d = (const IMAGE_IMPORT_DESCRIPTOR*)(base + dir.VirtualAddress);
+        for (DWORD i = 0; i < dir.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR) && d[i].Name; ++i) {
+            DWORD names = d[i].OriginalFirstThunk;
+            if (!InImage(d[i].Name, 11, size) || _stricmp((const char*)base + d[i].Name, "user32.dll") != 0 ||
+                !InImage(names, sizeof(IMAGE_THUNK_DATA), size))
+                continue;
+            auto th = (const IMAGE_THUNK_DATA*)(base + names);
+            for (DWORD j = 0; j < (size - names) / sizeof(IMAGE_THUNK_DATA) && th[j].u1.AddressOfData; ++j) {
+                if (IMAGE_SNAP_BY_ORDINAL(th[j].u1.Ordinal) || !InImage(th[j].u1.AddressOfData, 3, size)) continue;
+                const char* name = ((const IMAGE_IMPORT_BY_NAME*)(base + th[j].u1.AddressOfData))->Name;
+                for (int k = 0; k < kUnconvertedCount; ++k)
+                    if (strcmp(name, kUnconverted[k]) == 0) found |= 1u << k;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return found;
+}
+
+// Which game build this is, and whether it imports any of the above: both tell whoever reads a player's log
+// whether a game update changed something the mod relies on (NOTES.md, assumptions). Reads the loaded exe's
+// headers and import table only.
+static void LogGameBuild(const wchar_t* exePath) {
+    const IMAGE_NT_HEADERS* nt = ExeHeaders();
+    DWORD stamp = nt->FileHeader.TimeDateStamp;
+    WIN32_FILE_ATTRIBUTE_DATA fa = {};
+    GetFileAttributesExW(exePath, GetFileExInfoStandard, &fa);
+    unsigned long long size = ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+    __time64_t t = stamp;
+    tm when = {};
+    _gmtime64_s(&when, &t);
+    Log("game: built %04d-%02d-%02d (stamp %08lx, %llu bytes): %s", when.tm_year + 1900, when.tm_mon + 1, when.tm_mday,
+        stamp, size,
+        stamp == kVerifiedGameStamp ? "the build this mod version was verified with"
+                                    : "a different build from the one this mod version was verified with (2026-09-23)");
+    unsigned mask = UnconvertedImports();
+    std::string found;
+    for (int k = 0; k < kUnconvertedCount; ++k)
+        if (mask & (1u << k)) found += (found.empty() ? "" : ", ") + std::string(kUnconverted[k]);
+    if (!found.empty())
+        Log("WARNING: the game now imports %s, which the mod doesn't convert: that part of the game sees real pixels "
+            "(NOTES.md, playbook step 3)",
+            found.c_str());
 }
 
 void Init(HMODULE self) {
@@ -136,7 +223,7 @@ void Init(HMODULE self) {
                         FILE_ATTRIBUTE_NORMAL, nullptr);
 #endif
 
-    Log("Goh4kMod 2.0 d3d11 proxy (%s build), built %s %s",
+    Log("Goh4kMod 2.1 d3d11 proxy (%s build), built %s %s",
 #ifdef GOH4K_RELEASE
         "release",
 #else
@@ -151,7 +238,9 @@ void Init(HMODULE self) {
         Log("%ls is not in Exe=%ls: pass-through only", exeName, exes);
         g_cfg.wrap = 0;
         g_cfg.uiScale = 0;
+        return;
     }
+    LogGameBuild(exe);
 }
 
 void Shutdown(bool processExit) {
@@ -168,11 +257,21 @@ std::string GuidStr(REFGUID g) {
                g.Data4[2], g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
 }
 
-std::string ModuleNameOf(const void* addr) {
+HMODULE ModuleOf(const void* addr) {
     HMODULE mod = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)addr, &mod))
-        return Fmt("<unknown %p>", addr);
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)addr,
+                       &mod);
+    return mod;
+}
+
+const IMAGE_NT_HEADERS* ExeHeaders() {
+    auto base = (const uint8_t*)GetModuleHandleW(nullptr);
+    return (const IMAGE_NT_HEADERS*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+}
+
+std::string ModuleNameOf(const void* addr) {
+    HMODULE mod = ModuleOf(addr);
+    if (!mod) return Fmt("<unknown %p>", addr);
     wchar_t path[MAX_PATH] = {};
     GetModuleFileNameW(mod, path, MAX_PATH);
     const wchar_t* base = wcsrchr(path, L'\\');
@@ -180,11 +279,8 @@ std::string ModuleNameOf(const void* addr) {
 }
 
 bool IsMainModule(const void* addr) {
-    HMODULE mod = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)addr, &mod))
-        return false;
-    return mod == GetModuleHandleW(nullptr);
+    HMODULE mod = ModuleOf(addr);
+    return mod && mod == GetModuleHandleW(nullptr);
 }
 
 std::string DescribeSwapChainDesc(const DXGI_SWAP_CHAIN_DESC& d) {

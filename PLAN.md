@@ -228,3 +228,155 @@ WineHooks HD mode has shown the trick works in this game.
   it works and how to fix it after a game update.
 - **History:** milestones M1-M5 above built 1.0 (game at 1920x1080, rendered at 2x). 2.0 replaced that with
   native scaling only (LOG.md, 2026-10-05).
+
+## 2.1: sturdiness (approved 2026-10-05)
+Ethan's go, with cuts: in B only the overlays (B1) stay; B2-B5 are out (and with B3 the README's
+replace-file warning). None of the "Decisions for Ethan" (no signing, no ReShade chain-loading, no cursor
+follow-up, no GitHub push).
+Status (2026-10-05): done; results in LOG.md "2.1 sturdiness". A5 needed no fix (borderless renders at the
+desktop size). B1 measured: the Steam overlay patches over 5 hooks; deliberately no caller-layer change.
+
+Ethan asked what could go wrong later (game updates, other mods, other setups) and to make the mod as
+sturdy and independent as possible. The rule for all of it: when something around the mod changes, the mod
+keeps working, or it switches itself fully off and says why in goh4k.log. It is never half on, never
+crashes and never changes a game option.
+
+### A. Bugs found in the current code
+1. **Crash risk with popups.** context.cpp keeps the game's slot-0 texture view as a raw pointer (m_ps0,
+   m_ps0Copy).
+   - D3D11 unbinds a view by itself when its texture becomes a render target, as the popup backdrop
+     does. The game may then free the view.
+   - The next UI draw before the game binds slot 0 again would read freed memory, and UiAfterDraw would
+     re-bind a view the runtime had cleared.
+   - Fix: ask the context what is bound (PSGetShaderResources) at the draws that need it.
+   - Proof: a proxytest case (bind, bind as target, release, draw), and prompts in game.
+2. **A failed hook leaves the mod half on, and can crash it.** MinHook can fail: Exploit protection's
+   "Arbitrary code guard", another tool's patch in the way, a Windows update.
+   - The window is still subclassed. WM_SIZE is converted but the mouse isn't, so clicks land at k
+     times the place.
+   - WM_MOVE can call a null Real_GetClientRect.
+   - Fix: all or nothing. Any failed hook undoes the others, and the mod stays off for that session
+     (logged).
+   - Proof: proxytest with a forced failure.
+3. **A recreated game window isn't followed.** Only the first window is subclassed. If the game ever
+   destroys and recreates it (some engines do on a mode change), the mouse stays converted with the old
+   factor.
+   - Fix: on WM_NCDESTROY, unsubclass, go back to k = 1, and follow the next swapchain's window.
+   - Proof: proxytest.
+4. **A lost window procedure goes unnoticed.** If an overlay or the game replaces the window procedure,
+   WM_SIZE stops being converted, and the next mode change leaves the UI and the mouse disagreeing.
+   - Fix: when another procedure sits above ours, check with a private message that ours still answers.
+     If it doesn't, subclass again and resync.
+   - Proof: a proxytest that unhooks us.
+5. **Borderless below the desktop resolution is untested** (1920x1080 or 2560x1440 on the 4K desktop).
+   - If the game keeps a desktop-size window with smaller buffers, rule 3 sizes the popup stand-in from
+     the window factor (2) instead of buffer / logical (4/3), so the popup backdrop is wrong.
+   - Test first. Fix the ratio if needed.
+6. **Small:**
+   - The resync message is WM_APP+0x4B7, which could clash with one of the game's. Use
+     RegisterWindowMessage.
+   - Rule 3's frame count advances on any wrapped swapchain's Present. Count only the game window's.
+   - The release log gets a size cap (4 MB).
+
+### B. Other software
+1. **Overlays that hook the same user32 functions** (Steam; Discord is installed here).
+   - If an overlay hooks on top of ours, the mod sees it as the caller and doesn't convert, so clicks are
+     off by k while it runs. Steam was fine in the 1.0 tests.
+   - Measure: a log line naming, for each hooked function, the module its first jump lands in. Run with
+     the Steam overlay, and Discord's only if Ethan OKs starting it.
+   - Fix only if layered: also accept a game call that arrives through one hook layer.
+2. **Third-party borderless tools** (Borderless Gaming, Special K and the like) on a game in Windowed mode.
+   - The window then covers the monitor and the mod scales. In Windowed mode the game takes the client
+     size as its resolution and saves it, so the mod would likely change the player's setting.
+   - Test by restyling the window ourselves (drive.exe), with options.set backed up.
+   - Likely fix: if the game sizes its buffers to the logical size it was told, treat the window as
+     windowed and switch off for it.
+3. **Mods with the same file names.** ReShade installs as dxgi.dll; DXVK, Special K and OptiScaler use
+   d3d11/dxgi.
+   - Copying ours over theirs deletes theirs. Theirs over ours leaves the mod off, which is safe but
+     silent.
+   - Fix: each DLL checks its partner at start and logs "dxgi.dll here is not Goh4kMod's: mod off". The
+     README says: if Windows asks to replace d3d11.dll or dxgi.dll, stop.
+   - Chain-loading ReShade is decision 2.
+4. **Antivirus and Smart App Control** can block unsigned proxy DLLs, and then the game won't start. The
+   README's troubleshooting says what to do. Signing is decision 1.
+5. **CET:** link with /CETCOMPAT, so a future game build or Windows setting that enforces shadow stacks
+   still loads the DLLs. No effect otherwise.
+
+### C. Other setups
+1. **Monitors narrower than 16:9.** k from the height alone gives a logical width under 1920 (2560x1600
+   and 1920x1200 both become 1728x1080), a layout the UI was likely never tested in.
+   - Proposal, a behaviour change for those screens only: k = min(width / 1920, height / 1080). The
+     logical screen is then never smaller than 1920x1080.
+   - 2560x1600 becomes 1920x1200. 1920x1200 isn't scaled (it is already 1080p-class). 16:9, ultrawide
+     and 32:9 are unchanged.
+   - Proof: a proxytest table, and in game at 1920x1200 if the monitor lists it.
+2. **Graphics settings.** Every test used Ethan's settings, and the rules depend on which passes run.
+   - Sweep: presets Low to Ultra, each AA mode, HDR off, SSAO off, at 4K (one at 1440p).
+   - Compare each stock (UiScale=0) against the mod: the same image apart from the UI size.
+   - Settings change only through the game's Options. options.set is restored byte-identical from the
+     backup.
+3. **High resolutions and VRAM.** Rule 3's stand-in is k² times the screen: 133 MB at 4K, 26 MB at 1440p,
+   420 MB at 5K. At 8K it is impossible (over 16384 px): the backdrop stays zoomed, with no crash.
+   - Fix: one shared stand-in per device, made when a popup opens and released a few seconds after its
+     last use. Log its size.
+4. **Checked, nothing to do:**
+   - Windows display scaling: the game is per-monitor DPI aware by its manifest. Our DPI call failed
+     harmlessly (error 5) in all 44 game runs, and Ethan's desktop is at 150%.
+   - The editor, dedicated server and workshop tool share the folder, and two of them load d3d11.
+     `Exe=` gives them pure pass-through.
+   - Our DLLs need no Visual C++ runtime (static CRT, Windows DLLs only).
+5. **Not testable here** (added to Known limits; ask players for goh4k.log): AMD and Intel GPUs, a second
+   monitor, real 1440p/ultrawide/16:10 panels, Proton and the Steam Deck (the mod is inert there by
+   default).
+
+### D. Game updates
+1. **An assumptions table in NOTES.md:** each game behaviour the mod relies on, what breaks when it
+   changes, what the mod does then, and how the update check sees it. The behaviours:
+   - the UI layout follows the client size;
+   - the mouse comes through GetCursorPos/GetMessageW/ScreenToClient;
+   - rules 1-3;
+   - cursors come from CreateIconIndirect;
+   - the swapchain comes from IDXGIFactory::CreateSwapChain, called by call_to_arms.exe.
+2. **Health lines in the release log:**
+   - the game build (exe timestamp and size), next to the build the mod was verified with;
+   - "hooks 10/10, window followed, swapchain wrapped", and k;
+   - the hook-layer line (B1);
+   - a warning if, a minute into k > 1, the UI shader was never recognised (rule 1 didn't fire: the game
+     changed how it draws text);
+   - a warning if the exe imports a coordinate function the mod doesn't convert (GetCursorInfo,
+     GetWindowInfo, PeekMessageA, GetPhysicalCursorPos).
+   - The game imports mouse_event today. Dev logging confirms it never moves the cursor with it.
+3. **A one-command update check** (dev build, run by Claude):
+   - Steps: deploy and launch; main menu; Options; the Exit prompt (burst); a skirmish's first frames;
+     alt-tab; a switch to 1440p.
+   - Checks: captures diffed against references; the log checked for the health lines and DISAGREES.
+   - Then uninstall and give a PASS/FAIL report.
+   - The session briefing flags when call_to_arms.exe has changed since the last PASS.
+
+### E. Players
+The README gets:
+- Troubleshooting:
+  - the game won't start or closes itself: run the uninstaller;
+  - UI at its normal size: use Fullscreen or borderless at the monitor's resolution;
+  - mouse off: send goh4k.log.
+- The replace-file warning.
+- Single-player only.
+
+### Decisions for Ethan (defaults in brackets)
+1. Code-sign the DLLs (about $10 a month with Azure Trusted Signing), so antivirus and Smart App Control
+   block them less. [no]
+2. Build ReShade chain-loading. [no: detect and explain only]
+3. Let the cursor follow a resolution change without a restart. This takes two more hooks (SetCursor,
+   DestroyIcon); the game's own cursors stay untouched. [no]
+4. The source exists only on this disk: push it to a private GitHub repo. [ask]
+
+### Order
+1. In code, with proxytest cases: A1-A4, A6, B5, C1, C3.
+2. Build.
+3. In game: measure A5, B1 and B2, then fix them.
+4. The C2 sweep.
+5. D, then E.
+
+Each in-game fix gets before/after captures and a LOG.md entry, and each group a commit. Uninstall at the
+end.

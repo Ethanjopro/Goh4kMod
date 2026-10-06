@@ -21,11 +21,30 @@
 namespace goh4k {
 
 static uintptr_t g_exeBase = 0, g_exeEnd = 0;
-static HWND g_subclassed = nullptr;
+static std::atomic<HWND> g_subclassed{nullptr};
 
-static bool FromGame(void* ret) { return (uintptr_t)ret >= g_exeBase && (uintptr_t)ret < g_exeEnd; }
+// Hook ids: the rows of g_hooks, in order. While CheckHooks measures a hook another program patched over,
+// each caller check is counted: do the game's calls still reach us with its return address?
+enum HookId {
+    kGetCursorPos, kSetCursorPos, kClipCursor, kScreenToClient, kClientToScreen, kMapWindowPoints, kGetClientRect,
+    kGetMessageW, kPeekMessageW, kCreateIconIndirect, kHookCount
+};
+static std::atomic<bool> g_counting{false};
+struct CallCounts {
+    std::atomic<uint32_t> checks[kHookCount], game[kHookCount];
+};
+alignas(64) static CallCounts g_calls;  // off the cache line of the globals every hook call reads
 
-static Ratio R() { return UiScaleRatio(); }  // 1/1 at 1080p and below: the hooks change nothing
+static bool FromGame(int id, void* ret) {
+    bool game = (uintptr_t)ret >= g_exeBase && (uintptr_t)ret < g_exeEnd;
+    if (g_counting.load(std::memory_order_relaxed)) {
+        g_calls.checks[id].fetch_add(1, std::memory_order_relaxed);
+        if (game) g_calls.game[id].fetch_add(1, std::memory_order_relaxed);
+    }
+    return game;
+}
+
+static Ratio R() { return UiScaleRatio(); }  // 1/1 at 1080p-class sizes and below: the hooks change nothing
 
 // Client space: around 0,0.
 static LONG Down(LONG v) { return RatioDown(v, R()); }  // floor
@@ -76,13 +95,13 @@ static void LogWrite(const char* what, const std::string& args, const std::strin
 static BOOL(WINAPI* Real_GetCursorPos)(LPPOINT);
 static BOOL WINAPI Hook_GetCursorPos(LPPOINT p) {
     BOOL r = Real_GetCursorPos(p);
-    if (r && p && FromGame(_ReturnAddress())) DownS(p);
+    if (r && p && FromGame(kGetCursorPos, _ReturnAddress())) DownS(p);
     return r;
 }
 
 static BOOL(WINAPI* Real_SetCursorPos)(int, int);
 static BOOL WINAPI Hook_SetCursorPos(int x, int y) {
-    if (FromGame(_ReturnAddress())) {
+    if (FromGame(kSetCursorPos, _ReturnAddress())) {
         POINT p = {x, y};
         UpS(&p);
         LogWrite("SetCursorPos", Fmt("%d,%d", x, y), Fmt("%ld,%ld", p.x, p.y));
@@ -94,7 +113,7 @@ static BOOL WINAPI Hook_SetCursorPos(int x, int y) {
 // Up on every edge: exactly the real pixels whose Down lies inside the game's rect.
 static BOOL(WINAPI* Real_ClipCursor)(const RECT*);
 static BOOL WINAPI Hook_ClipCursor(const RECT* r) {
-    if (r && FromGame(_ReturnAddress())) {
+    if (r && FromGame(kClipCursor, _ReturnAddress())) {
         POINT a = {r->left, r->top}, b = {r->right, r->bottom};
         UpS(&a), UpS(&b);
         RECT p = {a.x, a.y, b.x, b.y};
@@ -102,13 +121,13 @@ static BOOL WINAPI Hook_ClipCursor(const RECT* r) {
                  Fmt("%ld,%ld-%ld,%ld", p.left, p.top, p.right, p.bottom));
         return Real_ClipCursor(&p);
     }
-    if (!r && FromGame(_ReturnAddress())) LogWrite("ClipCursor", "null", "null");
+    if (!r && FromGame(kClipCursor, _ReturnAddress())) LogWrite("ClipCursor", "null", "null");
     return Real_ClipCursor(r);
 }
 
 static BOOL(WINAPI* Real_ScreenToClient)(HWND, LPPOINT);
 static BOOL WINAPI Hook_ScreenToClient(HWND h, LPPOINT p) {
-    if (!p || !FromGame(_ReturnAddress())) return Real_ScreenToClient(h, p);
+    if (!p || !FromGame(kScreenToClient, _ReturnAddress())) return Real_ScreenToClient(h, p);
     UpS(p);
     BOOL r = Real_ScreenToClient(h, p);
     Down(p);
@@ -117,7 +136,7 @@ static BOOL WINAPI Hook_ScreenToClient(HWND h, LPPOINT p) {
 
 static BOOL(WINAPI* Real_ClientToScreen)(HWND, LPPOINT);
 static BOOL WINAPI Hook_ClientToScreen(HWND h, LPPOINT p) {
-    if (!p || !FromGame(_ReturnAddress())) return Real_ClientToScreen(h, p);
+    if (!p || !FromGame(kClientToScreen, _ReturnAddress())) return Real_ClientToScreen(h, p);
     Up(p);
     BOOL r = Real_ClientToScreen(h, p);
     DownS(p);
@@ -129,7 +148,7 @@ static bool IsScreen(HWND h) { return !h || h == GetDesktopWindow(); }
 
 static int(WINAPI* Real_MapWindowPoints)(HWND, HWND, LPPOINT, UINT);
 static int WINAPI Hook_MapWindowPoints(HWND from, HWND to, LPPOINT pts, UINT n) {
-    if (!pts || !n || !FromGame(_ReturnAddress())) return Real_MapWindowPoints(from, to, pts, n);
+    if (!pts || !n || !FromGame(kMapWindowPoints, _ReturnAddress())) return Real_MapWindowPoints(from, to, pts, n);
     POINT first = pts[0];
     for (UINT i = 0; i < n; ++i) IsScreen(from) ? UpS(&pts[i]) : Up(&pts[i]);
     int r = Real_MapWindowPoints(from, to, pts, n);
@@ -143,7 +162,7 @@ static int WINAPI Hook_MapWindowPoints(HWND from, HWND to, LPPOINT pts, UINT n) 
 static BOOL(WINAPI* Real_GetClientRect)(HWND, LPRECT);
 static BOOL WINAPI Hook_GetClientRect(HWND h, LPRECT r) {
     BOOL ok = Real_GetClientRect(h, r);
-    if (ok && r && h && h == g_subclassed && FromGame(_ReturnAddress())) {
+    if (ok && r && h && h == g_subclassed && FromGame(kGetClientRect, _ReturnAddress())) {
         r->right = Down(r->right);
         r->bottom = Down(r->bottom);
     }
@@ -160,14 +179,14 @@ static void DownMessage(MSG* m) {
 static BOOL(WINAPI* Real_GetMessageW)(LPMSG, HWND, UINT, UINT);
 static BOOL WINAPI Hook_GetMessageW(LPMSG m, HWND h, UINT lo, UINT hi) {
     BOOL r = Real_GetMessageW(m, h, lo, hi);
-    if (r > 0 && m && FromGame(_ReturnAddress())) DownMessage(m);
+    if (r > 0 && m && FromGame(kGetMessageW, _ReturnAddress())) DownMessage(m);
     return r;
 }
 
 static BOOL(WINAPI* Real_PeekMessageW)(LPMSG, HWND, UINT, UINT, UINT);
 static BOOL WINAPI Hook_PeekMessageW(LPMSG m, HWND h, UINT lo, UINT hi, UINT rm) {
     BOOL r = Real_PeekMessageW(m, h, lo, hi, rm);
-    if (r && m && FromGame(_ReturnAddress())) DownMessage(m);
+    if (r && m && FromGame(kPeekMessageW, _ReturnAddress())) DownMessage(m);
     return r;
 }
 
@@ -257,7 +276,8 @@ static int RoundScaled(int v, Ratio r) { return (int)((2 * v * r.n + r.d) / (2 *
 static HICON(WINAPI* Real_CreateIconIndirect)(PICONINFO);
 static HICON WINAPI Hook_CreateIconIndirect(PICONINFO ii) {
     Ratio r = UiScaleRatio();
-    if (!ii || ii->fIcon || !ii->hbmMask || !UiScaleActive() || !FromGame(_ReturnAddress()) || FixOn("nocursorscale"))
+    if (!ii || ii->fIcon || !ii->hbmMask || !UiScaleActive() || !FromGame(kCreateIconIndirect, _ReturnAddress()) ||
+        FixOn("nocursorscale"))
         return Real_CreateIconIndirect(ii);
     BITMAP bm = {};
     GetObjectW(ii->hbmMask, sizeof(bm), &bm);
@@ -279,9 +299,10 @@ static HICON WINAPI Hook_CreateIconIndirect(PICONINFO ii) {
     return made ? made : Real_CreateIconIndirect(ii);
 }
 
+
 // ---------------------------------------------------------------- window procedure
 
-static WNDPROC g_gameProc = nullptr;
+static std::atomic<WNDPROC> g_gameProc{nullptr};  // what our subclass calls on to
 
 // Does a client area of this size at the window's current position fill its monitor exactly (fullscreen, or
 // borderless at the desktop size)? GetMonitorInfoW isn't hooked, so this is the real (current-mode) rect.
@@ -295,19 +316,57 @@ bool ClientCoversMonitor(HWND h, UINT cw, UINT ch) {
 }
 
 // A private message; the subclass turns it into WM_SIZE with the client size at delivery time (a size read
-// when posting can be stale by then, e.g. during startup while the window goes fullscreen).
-static const UINT kResyncSizeMsg = WM_APP + 0x4B7;
+// when posting can be stale by then, e.g. during startup while the window goes fullscreen). Registered, so it
+// can't be one of the game's own WM_APP messages.
+static UINT g_resyncMsg = 0;
 
 static void UpdateClientOrigin(HWND h) {
     POINT o = {0, 0};
     if (Real_ClientToScreen ? Real_ClientToScreen(h, &o) : ClientToScreen(h, &o)) SetUiClientOrigin(o.x, o.y);
 }
 
-static std::atomic<bool> g_resyncPending{false};
+// When the queued resync was posted (0: none queued). A queued one counts for 2 s only: delivered while our procedure
+// was out of the chain, it would never come back to clear this.
+static std::atomic<ULONGLONG> g_resyncPostedAt{0};
+
+static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l);
+
+// The window is going away: nothing is converted until the next game window (the next swapchain's).
+// A newer game window whose swapchain appeared while the current window still existed (a game that recreates
+// its window makes the new one first): followed as soon as the current one is destroyed.
+static std::atomic<HWND> g_pendingWindow{nullptr};
+
+// Puts SubclassProc in front of hwnd's procedure (expected: the one there now). What it calls on to is stored
+// first, because a message can arrive the moment ours is in place: the window's thread keeps dispatching
+// while this runs on the render thread.
+static bool InstallSubclass(HWND hwnd, WNDPROC expected) {
+    g_gameProc = expected;
+    WNDPROC was = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&SubclassProc);
+    if (!was) return false;
+    if (was != expected) g_gameProc = was;  // replaced in between
+    return true;
+}
+
+static void ForgetGameWindow(HWND h) {
+    if (g_subclassed != h) return;
+    if ((WNDPROC)GetWindowLongPtrW(h, GWLP_WNDPROC) == &SubclassProc)
+        SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)g_gameProc.load());
+    g_subclassed = nullptr;
+    g_resyncPostedAt = 0;
+    ClearUiClient("game window destroyed");
+    Log("input: game window %p destroyed, no longer subclassed", h);
+    HWND next = g_pendingWindow.exchange(nullptr);
+    if (!next || !IsWindow(next)) return;
+    SubclassGameWindow(next);
+    RECT r = {};
+    if (g_subclassed == next && Real_GetClientRect(next, &r) && !IsIconic(next))
+        SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(next, r.right, r.bottom), "next game window",
+                    true);
+}
 
 static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == kResyncSizeMsg) {
-        g_resyncPending = false;
+    if (g_resyncMsg && m == g_resyncMsg) {
+        g_resyncPostedAt = 0;
         RECT r = {};
         Real_GetClientRect(h, &r);
         if (IsIconic(h) || r.right <= 0 || r.bottom <= 0) return 0;
@@ -329,65 +388,228 @@ static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         RECT r = {};
         if (Real_GetClientRect(h, &r) && !IsIconic(h))  // moved onto or off a whole monitor
             SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(h, r.right, r.bottom), "WM_MOVE", true);
+    } else if (m == WM_NCDESTROY) {
+        WNDPROC next = g_gameProc;
+        ForgetGameWindow(h);
+        return CallWindowProcW(next, h, m, w, l);
     }
     return CallWindowProcW(g_gameProc, h, m, w, l);
 }
 
 void NotifyGameWindowSizeChanged() {
-    if (!g_subclassed || g_resyncPending.exchange(true)) return;  // one is already queued
-    if (PostMessageW(g_subclassed, kResyncSizeMsg, 0, 0)) Log("input: window size resync queued");
-    else g_resyncPending = false;
+    HWND h = g_subclassed;
+    if (!h || !g_resyncMsg) return;
+    ULONGLONG now = GetTickCount64(), at = g_resyncPostedAt;
+    if ((at && now - at < 2000) || !g_resyncPostedAt.compare_exchange_strong(at, now)) return;  // one is queued
+    if (PostMessageW(h, g_resyncMsg, 0, 0)) Log("input: window size resync queued");
+    else g_resyncPostedAt = 0;
 }
 
 void SubclassGameWindow(HWND hwnd) {
     if (!hwnd || hwnd == g_subclassed) return;
-    if (g_subclassed) {
-        Log("input: a second game window (%p); only %p is subclassed", hwnd, g_subclassed);
+    if (HWND cur = g_subclassed; cur && IsWindow(cur)) {
+        g_pendingWindow = hwnd;
+        Log("input: a second game window (%p): followed once %p is gone", hwnd, cur);
         return;
     }
-    g_gameProc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&SubclassProc);
-    g_subclassed = g_gameProc ? hwnd : nullptr;
-    if (g_subclassed) UpdateClientOrigin(hwnd);
-    Log("input: game window %p subclassed for WM_SIZE/WM_MOVE (%s)", hwnd, g_gameProc ? "ok" : "failed");
+    if (!g_resyncMsg) g_resyncMsg = RegisterWindowMessageW(L"Goh4kMod.ResyncSize");
+    bool ok = InstallSubclass(hwnd, (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    g_subclassed = ok ? hwnd : nullptr;
+    if (ok) UpdateClientOrigin(hwnd);
+    Log("input: game window %p subclassed for WM_SIZE/WM_MOVE (%s)", hwnd, ok ? "ok" : "failed");
 }
 
 bool IsGameWindow(HWND hwnd) { return hwnd && hwnd == g_subclassed; }
 
-// ---------------------------------------------------------------- install
+// ---------------------------------------------------------------- install and checks
+
+struct HookEntry {
+    const char* name;
+    void* detour;
+    void** real;
+    bool converts;          // false: only the cursor's size
+    void* target;           // the user32 function
+    uint8_t stock[5];       // its first bytes before our patch
+    uint8_t ours[5];        // and with it (MinHook writes a 5-byte jmp)
+    int state;              // last seen: 0 ours, 1 another patch over ours, 2 our patch gone
+    uint32_t checks, game;  // caller-check counts when the patch over ours was seen
+    int checksLeft;         // CheckHooks runs left to measure how its calls arrive (0: done)
+};
 
 template <typename T>
-static int Hook(const char* name, T* hook, T** real) {
-    MH_STATUS s = MH_CreateHookApi(L"user32", name, (LPVOID)hook, (LPVOID*)real);
-    if (s != MH_OK) Log("input hook %s: MH_CreateHookApi failed (%s)", name, MH_StatusToString(s));
-    return s == MH_OK;
+static HookEntry Entry(const char* name, T* detour, T** real, bool converts = true) {
+    return HookEntry{name, (void*)detour, (void**)real, converts, nullptr, {}, {}, 0, 0, 0, 0};
+}
+
+static HookEntry g_hooks[] = {  // in HookId order
+    Entry("GetCursorPos", &Hook_GetCursorPos, &Real_GetCursorPos),
+    Entry("SetCursorPos", &Hook_SetCursorPos, &Real_SetCursorPos),
+    Entry("ClipCursor", &Hook_ClipCursor, &Real_ClipCursor),
+    Entry("ScreenToClient", &Hook_ScreenToClient, &Real_ScreenToClient),
+    Entry("ClientToScreen", &Hook_ClientToScreen, &Real_ClientToScreen),
+    Entry("MapWindowPoints", &Hook_MapWindowPoints, &Real_MapWindowPoints),
+    Entry("GetClientRect", &Hook_GetClientRect, &Real_GetClientRect),
+    Entry("GetMessageW", &Hook_GetMessageW, &Real_GetMessageW),
+    Entry("PeekMessageW", &Hook_PeekMessageW, &Real_PeekMessageW),
+    Entry("CreateIconIndirect", &Hook_CreateIconIndirect, &Real_CreateIconIndirect, false),
+};
+static_assert(sizeof(g_hooks) / sizeof(g_hooks[0]) == kHookCount, "one g_hooks row per HookId");
+static bool g_hooksOn = false;
+
+static bool Readable(const void* p, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!VirtualQuery(p, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
+        return false;
+    return (const uint8_t*)p + n <= (const uint8_t*)mbi.BaseAddress + mbi.RegionSize;
+}
+
+// The module a call into fn reaches first: follows the jumps hook libraries put at a function's entry (jmp
+// rel8/rel32, jmp [rip+x], mov rax/r11,imm64 + jmp) through relay pages until it lands in another module.
+// Only used to name, in the log, whoever patched over us.
+static HMODULE Landing(const void* fn) {
+    const uint8_t* p = (const uint8_t*)fn;
+    HMODULE start = ModuleOf(fn);
+    for (int i = 0; i < 6 && p && Readable(p, 13); ++i) {
+        const uint8_t* next = nullptr;
+        if (p[0] == 0xE9) next = p + 5 + *(const int32_t*)(p + 1);
+        else if (p[0] == 0xEB) next = p + 2 + (int8_t)p[1];
+        else if (p[0] == 0xFF && p[1] == 0x25) {
+            const uint8_t* slot = p + 6 + *(const int32_t*)(p + 2);
+            if (Readable(slot, 8)) next = *(const uint8_t* const*)slot;
+        } else if (p[0] == 0x48 && p[1] == 0xB8 && p[10] == 0xFF && p[11] == 0xE0) next = *(const uint8_t* const*)(p + 2);
+        else if (p[0] == 0x49 && p[1] == 0xBB && p[10] == 0x41 && p[11] == 0xFF && p[12] == 0xE3)
+            next = *(const uint8_t* const*)(p + 2);
+        if (!next) break;
+        p = next;
+        HMODULE m = ModuleOf(p);
+        if (m && m != start) return m;
+    }
+    return ModuleOf(p);
+}
+
+// proxytest (dev builds): GOH4K_TEST_FAILHOOK=<name> pretends that hook can't be made, to check that the mod
+// then stays fully off.
+static bool TestFailsHook(const char* name) {
+#ifdef GOH4K_RELEASE
+    (void)name;
+    return false;
+#else
+    char fail[64] = {};
+    GetEnvironmentVariableA("GOH4K_TEST_FAILHOOK", fail, sizeof(fail));
+    return strcmp(fail, name) == 0;
+#endif
 }
 
 void InstallInputHooks() {
-    HMODULE exe = GetModuleHandleW(nullptr);
-    auto dos = (const IMAGE_DOS_HEADER*)exe;
-    auto nt = (const IMAGE_NT_HEADERS*)((const uint8_t*)exe + dos->e_lfanew);
-    g_exeBase = (uintptr_t)exe;
-    g_exeEnd = g_exeBase + nt->OptionalHeader.SizeOfImage;
+    g_exeBase = (uintptr_t)GetModuleHandleW(nullptr);
+    g_exeEnd = g_exeBase + ExeHeaders()->OptionalHeader.SizeOfImage;
 
     MH_STATUS s = MH_Initialize();
-    if (s != MH_OK) {
-        Log("input hooks: MH_Initialize failed (%s)", MH_StatusToString(s));
+    bool inited = s == MH_OK;
+    int made = 0;
+    const char* failed = inited ? nullptr : "MH_Initialize";
+    MH_STATUS failedWith = s;
+    if (inited) {
+        for (HookEntry& e : g_hooks) {
+            MH_STATUS c = MH_CreateHookApiEx(L"user32", e.name, e.detour, e.real, &e.target);
+            if (c == MH_OK && TestFailsHook(e.name)) MH_RemoveHook(e.target), c = MH_ERROR_NOT_EXECUTABLE;
+            if (c != MH_OK) {
+                Log("input hook %s: %s", e.name, MH_StatusToString(c));
+                if (!failed) failed = e.name, failedWith = c;
+                continue;
+            }
+            memcpy(e.stock, e.target, sizeof(e.stock));
+            ++made;
+        }
+        if (made == kHookCount) {
+            s = MH_EnableHook(MH_ALL_HOOKS);
+            if (s != MH_OK) failed = "MH_EnableHook", failedWith = s;
+        }
+    }
+    if (failed) {
+        // All or nothing: with some hooks missing the game would get a logical client size and a real mouse (or
+        // the reverse), and clicks would land in the wrong place. Without any, it runs as it does without the mod.
+        if (inited) MH_Uninitialize();  // also undoes any hook already enabled
+        for (HookEntry& e : g_hooks) *e.real = nullptr;
+        g_cfg.uiScale = 0;
+        Log("input hooks: %d of %d made, %s failed (%s): native scaling is off for this session", made, kHookCount, failed,
+            MH_StatusToString(failedWith));
         return;
     }
+    for (HookEntry& e : g_hooks) memcpy(e.ours, e.target, sizeof(e.ours));
+    g_hooksOn = true;
+    Log("input hooks: %d of %d user32 functions hooked; game exe %p-%p", made, kHookCount, (void*)g_exeBase, (void*)g_exeEnd);
+}
+
+int InputHooksInstalled() { return g_hooksOn ? kHookCount : 0; }
+
+int InputHooksPatchedOver() {
     int n = 0;
-    n += Hook("GetCursorPos", &Hook_GetCursorPos, &Real_GetCursorPos);
-    n += Hook("SetCursorPos", &Hook_SetCursorPos, &Real_SetCursorPos);
-    n += Hook("ClipCursor", &Hook_ClipCursor, &Real_ClipCursor);
-    n += Hook("ScreenToClient", &Hook_ScreenToClient, &Real_ScreenToClient);
-    n += Hook("ClientToScreen", &Hook_ClientToScreen, &Real_ClientToScreen);
-    n += Hook("MapWindowPoints", &Hook_MapWindowPoints, &Real_MapWindowPoints);
-    n += Hook("GetClientRect", &Hook_GetClientRect, &Real_GetClientRect);
-    n += Hook("GetMessageW", &Hook_GetMessageW, &Real_GetMessageW);
-    n += Hook("PeekMessageW", &Hook_PeekMessageW, &Real_PeekMessageW);
-    n += Hook("CreateIconIndirect", &Hook_CreateIconIndirect, &Real_CreateIconIndirect);
-    s = MH_EnableHook(MH_ALL_HOOKS);
-    Log("input hooks: %d of 10 user32 functions hooked, enable %s; game exe %p-%p", n, MH_StatusToString(s),
-        (void*)g_exeBase, (void*)g_exeEnd);
+    for (const HookEntry& e : g_hooks) n += e.state == 1;
+    return n;
+}
+
+// Is each hook still where we put it? Another program (an overlay) can patch over ours after us, or restore
+// the original bytes. Changes are logged. Through another patch, the game's calls still reach us with its
+// return address if that program passes them on with a jump (they are then converted as usual), but not if
+// it calls us: then they look like that program's own calls and stay real. For up to 500 calls or a minute
+// after a patch over ours, the caller checks are counted and logged to tell which. With a converting hook
+// restored, the mod would be half on, so it switches itself off.
+static void CheckHooks() {
+    bool measuring = false;
+    for (int i = 0; i < kHookCount; ++i) {
+        HookEntry& e = g_hooks[i];
+        uint8_t now[5];
+        memcpy(now, e.target, sizeof(now));
+        int state = !memcmp(now, e.ours, sizeof(now)) ? 0 : !memcmp(now, e.stock, sizeof(now)) ? 2 : 1;
+        if (state != e.state) {
+            e.state = state;
+            if (state == 0) {
+                Log("input hook %s: ours again", e.name);
+            } else if (state == 1) {
+                e.checks = g_calls.checks[i], e.game = g_calls.game[i], e.checksLeft = 30;
+                Log("input hook %s: patched over by %s", e.name, ModuleNameOf(Landing(e.target)).c_str());
+            } else {
+                Log("input hook %s: our patch was removed", e.name);
+                if (e.converts && UiScaleShutOff(Fmt("the %s hook was removed by another program", e.name).c_str()))
+                    NotifyGameWindowSizeChanged();
+            }
+        }
+        if (state != 1 || !e.checksLeft) continue;
+        uint32_t checks = g_calls.checks[i] - e.checks, game = g_calls.game[i] - e.game;
+        if (checks < 500 && --e.checksLeft) {
+            measuring = true;
+            continue;
+        }
+        e.checksLeft = 0;
+        if (checks)
+            Log("input hook %s, patched over: %u of the %u calls since came with the game's return address%s", e.name,
+                game, checks, game ? " (converted as usual)" : "; calls that come through it are not converted");
+    }
+    g_counting.store(measuring, std::memory_order_relaxed);
+}
+
+// Our window procedure can drop out of the chain: the game or another program sets a new one, or one that
+// subclassed before us puts back what it replaced. WM_SIZE would then reach the game real while everything
+// else stays logical. When the top procedure is exactly the one we wrapped, or the class's own, ours is
+// certainly out of the chain: subclass again and resync. Any other procedure above ours normally calls on to
+// ours, so it is left alone.
+static void CheckWindowProc() {
+    HWND h = g_subclassed;
+    if (!h) return;
+    WNDPROC top = (WNDPROC)GetWindowLongPtrW(h, GWLP_WNDPROC);
+    if (!top || top == &SubclassProc) return;
+    if (top != g_gameProc.load() && top != (WNDPROC)GetClassLongPtrW(h, GCLP_WNDPROC)) return;
+    if (!InstallSubclass(h, top)) return;
+    Log("input: the game window's procedure was replaced and ours dropped out; subclassed again");
+    g_resyncPostedAt = 0;  // one queued meanwhile went to the other procedure
+    NotifyGameWindowSizeChanged();
+}
+
+void CheckGameWindow() {
+    if (!UiScaleConfigured()) return;
+    CheckWindowProc();
+    CheckHooks();
 }
 
 }  // namespace goh4k

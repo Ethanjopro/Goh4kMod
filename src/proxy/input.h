@@ -4,7 +4,16 @@
 
 namespace goh4k {
 
-void InstallInputHooks();  // DLL load, when UiScale is on: before the game creates its window
+// DLL load, when UiScale is on: before the game creates its window. All or nothing: if any hook can't be
+// made, none stays and UiScale is switched off for the session.
+void InstallInputHooks();
+int InputHooksInstalled();    // how many are in place (0 if they failed)
+int InputHooksPatchedOver();  // how many of them another program has patched over since (CheckGameWindow)
+
+// Every couple of seconds from the game window's Present: puts our window procedure back if the game or
+// another program replaced it, and logs hooks patched over by another program (or switches the mod off if
+// one of ours was removed).
+void CheckGameWindow();
 
 // Converts WM_SIZE for the game's window procedure (it is sent straight to it, so the GetMessage hook never
 // sees it) and follows WM_MOVE for the client origin. Once per window.

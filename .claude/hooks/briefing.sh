@@ -14,6 +14,14 @@ if [ -f .claude/game-bin.txt ]; then
   if [ -d "$g" ]; then
     x=$(cd "$g" && ls -1 dxgi.dll d3d11.dll d3d9.dll dinput8.dll winmm.dll version.dll dxvk.conf ./*.asi ./*.ini 2>/dev/null | sed 's#^\./##' | tr '\n' ' ')
     echo "proxy/loader files in game binaries/x64: ${x:-none}"
+    # Has the game been updated since the last passing update check (src/scripts/update-check.ps1)?
+    if [ -f "$g/call_to_arms.exe" ]; then
+      now="$(stat -c '%s %Y' "$g/call_to_arms.exe" 2>/dev/null)"
+      last="$(tr -d '\r\n' < scratch/update-check-last-pass.txt 2>/dev/null)"
+      if [ -z "$last" ]; then echo "update check: no PASS recorded yet"
+      elif [ "$now" != "$last" ]; then echo "update check: call_to_arms.exe changed since the last PASS: run src/scripts/update-check.ps1"
+      else echo "update check: the game exe is the one that last passed"; fi
+    fi
   else
     echo "game path in .claude/game-bin.txt not found: $g"
   fi

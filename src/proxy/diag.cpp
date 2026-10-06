@@ -325,8 +325,20 @@ static bool CaptureTexture(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Re
 
 // ---------------------------------------------------------------- trace
 
+// vp= is what the GPU uses; when a full-screen rule changed it, game-vp= is what the game set (the wrapper's
+// RSGetViewports returns the game's own values).
+static std::string GameViewport(WrappedContext* ctx) {
+    const UINT kMax = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    D3D11_VIEWPORT real[kMax], game[kMax];
+    UINT nr = kMax, ng = kMax;
+    ctx->RealCtx()->RSGetViewports(&nr, real);
+    ctx->RSGetViewports(&ng, game);
+    if (!nr || !ng || (real[0].Width == game[0].Width && real[0].Height == game[0].Height)) return {};
+    return Fmt(" game-vp=%gx%g", game[0].Width, game[0].Height);
+}
+
 void TraceRecord(WrappedContext* ctx, TraceKind kind, const std::string& call) {
-    std::string state = kind == TraceKind::Draw       ? GraphicsState(ctx->RealCtx())
+    std::string state = kind == TraceKind::Draw       ? GraphicsState(ctx->RealCtx()) + GameViewport(ctx)
                         : kind == TraceKind::Dispatch ? ComputeState(ctx->RealCtx())
                                                       : std::string();
     if (ctx->IsImmediate()) {

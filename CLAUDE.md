@@ -4,8 +4,8 @@ Goal: Call to Arms - Gates of Hell: Ostfront (Steam, GEM2 engine, D3D11, x64) ru
 resolution (1440p, 4K) while the UI keeps its 1080p size, with no game setting to change.
 
 Approach (decided, 2.0): our own small D3D11/DXGI proxy DLL in the game's binaries\x64. The game keeps its
-resolution and renders natively; the proxy only tells it the client area is native/k (k = height/1080)
-and converts the mouse, so the UI lays out at 1080p size (NOTES.md). Keep it as unintrusive as possible:
+resolution and renders natively; the proxy only tells it the client area is native/k (k = height/1080, or width/1920 on
+screens narrower than 16:9) and converts the mouse, so the UI lays out at 1080p size (NOTES.md). Keep it as unintrusive as possible:
 Ethan dropped 1.0's 2x render path for that reason. No WineHooks, DXVK or other third-party runtime in
 the loop.
 

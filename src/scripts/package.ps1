@@ -4,7 +4,7 @@
 # Refuses to package if a DLL contains this machine's user name or project path (privacy check).
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path "$PSScriptRoot\..\..").Path
-$Version = '2.0'
+$Version = '2.1'
 $Out = "$Root\build\release"
 $Stage = "$Out\Goh4kMod-$Version"
 $Zip = "$Out\Goh4kMod-$Version.zip"

@@ -147,6 +147,7 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved) {
             InstallInputHooks();
         }
     } else if (reason == DLL_PROCESS_DETACH) {
+        LogUiSessionSummary();
         Shutdown(reserved != nullptr);
     }
     return TRUE;

@@ -39,6 +39,8 @@ void WriteTextFile(const std::wstring& path, const std::string& text);
 
 std::string Fmt(const char* fmt, ...);
 std::string GuidStr(REFGUID g);
+HMODULE ModuleOf(const void* addr);            // the module containing this address, or null
+const IMAGE_NT_HEADERS* ExeHeaders();          // the process .exe's, as loaded
 std::string ModuleNameOf(const void* addr);
 bool IsMainModule(const void* addr);           // is this code address inside the process's .exe?
 std::string DescribeSwapChainDesc(const DXGI_SWAP_CHAIN_DESC& d);

@@ -9,8 +9,10 @@ does, why, where things are, and a playbook for when a game update breaks it.
 The player keeps the game at the monitor's own resolution. Our `d3d11.dll` and `dxgi.dll` sit in the
 game's `binaries\x64` and wrap the game's D3D11 device, contexts and swapchain, but rendering stays
 native: no texture, swapchain or display mode is changed. Ten user32 functions are hooked with MinHook so
-the game sees its client area, and the mouse, divided by k = real client height / 1080 (2 at 4K, 4/3 at
-1440p). Its UI therefore lays out at its 1080p size and is drawn magnified onto the native screen. Three
+the game sees its client area, and the mouse, divided by k (2 at 4K, 4/3 at 1440p): real height / 1080 on
+16:9 and wider screens, real width / 1920 on narrower ones, so the logical screen is never smaller than
+1920x1080 (2560x1600 -> 1920x1200; 1920x1200 isn't scaled). Its UI therefore lays out at its 1080p size and
+is drawn magnified onto the native screen. Three
 full-screen viewport rules fix what the mismatch between client size and render size breaks (point 2).
 Window position, monitor and display-mode calls are not hooked, so Options, the mode list and
 options.set never see a change. Only calls made by `call_to_arms.exe` itself are converted. Only a client
@@ -77,6 +79,51 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 11. **No built-in hi-DPI text** (research 2026-10-05): fonts are fixed-size BMFont pages picked by name and
     size; `gui.scale_index` is an options key the fonts never use. Sharper text would need 2x text
     surfaces plus font pages rebuilt at runtime (LOG.md).
+12. **2.1 sturdiness** (2026-10-05, PLAN.md 2.1): the mod is all or nothing and checks itself.
+    - Hooks: if any of them can't be made, none stays and the mod is off for the session. Every 2 s the
+      game window's Present checks each hook's first bytes: a hook another program patched over is logged
+      (with how its next calls arrive, counted for up to 500 calls or a minute); one whose patch was removed
+      switches the mod off (never half on).
+    - Window procedure: if ours drops out of the chain (top = the one we wrapped, or the class's own), it is
+      put back and the game resynced. WM_NCDESTROY unsubclasses and sets k = 1; the next swapchain's window
+      is followed. A queued resync counts for 2 s only, so a lost one can't block later ones.
+    - Rule 3 reads pixel-shader slot 0 back from the context (D3D11 unbinds a view by itself when its texture
+      becomes a render target), and its stand-in is shared per size and format and released 5 s after the
+      last popup draw (it holds the device, so it also goes with the swapchain).
+    - Logs: game build and the build this version was verified with, user32 coordinate functions the exe
+      imports that the mod doesn't convert, a health line, a session summary at unload (with a warning if
+      rule 1 never applied in a long scaled session), and a 4 MB cap.
+13. **The Steam overlay patches over 5 of our hooks** (GetCursorPos, SetCursorPos, ClipCursor, GetMessageW,
+    PeekMessageW; it hooks after us). Its GetCursorPos passes the game's calls on with a jump (538 of 551
+    reach us with the game's return address: converted). Its GetMessageW calls us from its own code (game ->
+    overlay -> overlay -> us), so with the overlay on, the mouse coordinates in the game's messages stay
+    real. Harmless: the game reads the mouse with GetCursorPos (clicks, drag box and minimap were right in
+    every session, all with the overlay loaded). Deliberately not "fixed" by accepting calls through another
+    module: the overlay's own window would then get logical coordinates. Clicking inside the overlay works.
+14. **mouse_event:** the game imports it and calls it every 10 s with a relative +1/-1 px move (a keep-awake
+    nudge, dev-build logging). Relative moves need no conversion.
+15. **Borderless renders at the desktop size** whatever Resolution says (buffers 3840x2160 with Resolution
+    2560x1440 on the 4K desktop), so buffers never differ from the window there. The stand-in size is
+    buffer² / logical anyway, which is k times the image whenever they match.
+
+## What the mod relies on in the game (check these after an update)
+
+| The game... | If an update changes it | What the mod does | How it shows |
+|---|---|---|---|
+| lays its UI out from the client size it is told (WM_SIZE, GetClientRect) | UI at native size while the mouse is divided by k: clicks land wrong | nothing automatic | menu captures differ; session summary: rule 1 never applied |
+| reads the mouse with GetCursorPos (and ScreenToClient/ClientToScreen/MapWindowPoints, MSG) | a new function (GetCursorInfo, PeekMessageA, GetMessagePos...) sees real pixels | logs a WARNING at start | `game now imports ...` in goh4k.log |
+| keeps one window and its own window procedure | handled | follows a new window; puts its procedure back | `destroyed` / `subclassed again` log lines |
+| draws UI text into label surfaces with the real-screen viewport (rule 1) | text 2x and cut off, or the rule unused | nothing automatic | text crops; session summary warning |
+| sets the logical viewport on screen-sized targets only by mistake (rule 2; stock 4K never sets 1920x1080 on 3840x2160) | a new half-res pass in the top-left of a full target would be stretched | nothing automatic | preset-sweep traces: a new rule-2 pixel shader |
+| draws popup backdrops with 0..1 in an element's first frame and logical / texture size after (rule 3) | wrong backdrop for some frames | dev build logs `ui check ... DISAGREES` | update check burst + dev log |
+| draws all UI with one vertex shader, learnt from rule-1 draws | rule 3 never fires: backdrops magnified | — | no `recognised as the UI's` line; summary shows 0 UI shaders |
+| makes its cursors with CreateIconIndirect | cursor stays 32 px | — | `drive cursor` |
+| creates its device with D3D11CreateDeviceAndSwapChain and its swapchain with IDXGIFactory::CreateSwapChain, from call_to_arms.exe | the mod does nothing (safe) | — | no `health:` line |
+| imports only D3D11CreateDeviceAndSwapChain and CreateDXGIFactory from d3d11/dxgi | an export our stubs lack: the game won't start | — | playbook step 2 |
+| saves the client size as its resolution in a window smaller than its monitor | (why such windows aren't scaled) | — | — |
+
+`game: built ...` at the top of goh4k.log says whether this is the build the mod version was verified with
+(`kVerifiedGameStamp` in util.cpp; bump it after verifying a new game build).
 
 ## Where things are
 
@@ -106,6 +153,13 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
   - `build\proxytest.exe`: wrapper smoke test, diagnostics round trip, ratio math, and native-scaling
     checks: a bordered 2560x1440 window passes through, a borderless monitor-sized one is scaled.
   - `powershell -File src\scripts\test-gamefolder.ps1`: deploy/uninstall against a fake game folder.
+  - `powershell -ExecutionPolicy Bypass -File src\scripts\update-check.ps1` (the game closed, hands off the
+    mouse, about 7 minutes, 4K Fullscreen): backs up the profile, deploys the dev build, drives menu, Exit
+    prompt (frame burst), Options and a new mission, diffs the snapshots against
+    captures\update-check\ref and checks the dev log's lines, then restores the profile and the previous
+    deployment and prints PASS/FAIL (history in scratch\update-check-history.txt). `-MakeReference` stores a
+    run's snapshots as references. The session briefing says when call_to_arms.exe has changed since the
+    last PASS.
 - `deploy.cmd` installs the dev build; `deploy.cmd -Release` installs the newest packaged release.
   `uninstall.cmd /nopause` removes everything and checks the folder against
   `scratch/baseline-binaries-x64.txt`. After a game update, retake that baseline (Phase 1 step) or the
@@ -115,12 +169,20 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 
 ## Playbook: the game updated and something broke
 
+0. **Run the update check** (src\scripts\update-check.ps1, above). Its FAIL lines say where to start; its
+   snapshots are in captures\update-check\<time>. Then check the table "What the mod relies on" against
+   what changed. When everything is right again, bump `kVerifiedGameStamp` (util.cpp) to the new exe's link
+   time stamp (`game: built ... stamp` in the log) and retake the references with `-MakeReference`.
 1. **Does it still load?** Read `goh4k.log` next to the DLLs (release build) or `scratch/logs/` (dev
    build):
-   - "input hooks: 10 of 10", "ui: swapchain buffers 3840x2160", "ui scale 2/1 (WM_SIZE, real client
-     3840x2160)", "ui: vertex shader ... recognised as the UI's", the notes `ui-label-viewport` and
-     `ui-screen-viewport` (first mission or prompt) and "... the UI gets a 7680x4320 copy of it" (first
-     prompt) mean the core works. Dev build: no `ui check ... DISAGREES` lines except one per resolution switch.
+   - `game: built ...` (is this the verified build?), "input hooks: 10 of 10", "health: input hooks 10 (5
+     patched over by another program), game window followed, swapchain wrapped; client 3840x2160 (covers its
+     monitor), buffers 3840x2160, k 2/1", "ui: vertex shader ... recognised as the UI's", the notes
+     `ui-label-viewport` and `ui-screen-viewport` (first mission or prompt), "ui: popup stand-in 7680x4320"
+     (first prompt) and the `session:` summary at unload mean the core works. `WARNING` lines say what
+     broke. Dev build: no `ui check ... DISAGREES` lines except one per resolution switch.
+   - `input hook X: patched over by Y` is another program (the Steam overlay: 5 hooks, expected) and the
+     line after up to 500 calls or a minute says whether the game's calls still arrive directly.
    - If no swapchain is wrapped, the game changed how it creates it. Look for
      `IDXGIFactory::CreateSwapChain` / `CreateSwapChainForHwnd` lines, then check `dumpbin /imports` of
      the exe (d3d11/dxgi functions). A move to D3D12 would need a new proxy.
@@ -157,8 +219,15 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 
 ## Known limits
 
-- Tested on one 4K monitor (RTX 5090, Windows 11, HDR desktop): fullscreen 3840x2160 and 2560x1440,
-  borderless, and windowed 2560x1440. Not on a real 1440p, 5K, 16:10, ultrawide or multi-monitor setup.
+- Tested on one 4K monitor (RTX 5090, Windows 11, HDR desktop, 150% display scaling): fullscreen
+  3840x2160, 2560x1440, 2560x1600 (16:10, k 4/3, logical 1920x1200) and 1920x1200 (not scaled), borderless,
+  windowed 2560x1440; presets Minimum, Medium, Maximum and Ethan's custom settings. Not on a real 1440p, 5K,
+  ultrawide or multi-monitor setup, nor on AMD or Intel GPUs (the mod uses only core D3D11 calls).
+- 8K (k = 4): the popup stand-in would be over D3D11's 16384 px limit, so popup backdrops stay magnified
+  (logged once).
+- With the Steam overlay on, the mouse coordinates inside the game's window messages aren't converted
+  (History 13). Harmless while the game reads the mouse with GetCursorPos.
+- Proton / Steam Deck: the mod is inert by default (Proton's own d3d11/dxgi are used).
 - Windowed mode (a window smaller than its monitor) isn't scaled: the UI is its stock native size there.
 - Options' read-only "Current mode" line shows the logical size (1920x1080 at 4K).
 - UI text and icons are the 1080p art magnified, as in 1.0. 1-pixel UI lines draw one real pixel wide.
@@ -168,6 +237,11 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 - A small 1382x824 window flashes for a split second when quitting or when the game loses focus: the
   game's own SetFullscreenState(0) (DXGI restores its startup window size). Same without the mod.
 - During a resolution switch one frame can show a popup backdrop slightly magnified (the game draws it
-  once with the old coordinates while the monitor re-syncs).
+  once with the old coordinates while the monitor re-syncs). The same single frame can follow an applied
+  graphics change that makes the game recreate its swapchain (an MSAA change): the new backdrop texture has
+  no draw history yet. Both sit inside the game's own mode-switch flash.
+- After an in-game graphics change the game sizes many full-screen passes from the client size (about 1100
+  rule-2 draws per frame instead of 15 after a fresh start); rule 2 restores them all, and smaller targets
+  keep their own viewports (preset sweep, LOG.md 2026-10-05).
 - It conflicts with other mods installed as d3d11.dll or dxgi.dll (ReShade, DXVK).
 - Multiplayer is untested by design. Users must uninstall before going online.
