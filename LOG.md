@@ -71,6 +71,9 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - 2026-10-06 01:30 uninstall: removed d3d11.dll, dxgi.dll, Uninstall Goh4kMod.bat; folder matches the baseline
   (26 files).
 - 2026-10-06 01:30 deploy: the final 2.1.1 release, no uninstaller (d3d11.dll A1FF60BB798C, dxgi.dll 4543AB43E49F).
+- 2026-10-12 00:42 to 01:37: 12 deploys of dev builds and the 2.1.1 release (d3d11.dll, dxgi.dll) for the blur and
+  screenshot work (2026-10-12 entry below), the update check included. 01:37 deploy -Release: the 2.1.2 release
+  (d3d11.dll C85CBB73AB08, dxgi.dll 4FFDEF415781), installed now.
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -81,6 +84,9 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   profile as of 2026-10-05 23:50: scratch\settings-backup\borderless-20261005-235013). Older copies:
   scratch\settings-backup\ (options.set.2026-10-02 and profile-2026-10-05).
 - scratch\shaderpak holds HLSL extracted read-only from shader.pak for analysis (gitignored). Delete freely.
+- Game screenshots (Documents\My Games\gates of hell\screenshots): the 2026-10-12 tests' PrintScreens were moved
+  out to captures\shots (scripts move each new one). Ethan's own 261012-0031/0032 (1920x1080, 2.1.1) and
+  261005-2339 stay.
 - scratch\interface-pak holds interface.pak extracted read-only for the font research (gitignored, 2078
   files). Delete freely.
 
@@ -620,3 +626,37 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   profile; options.set is not in the game's cloud profile goh.profile_v2, which holds game_progress, keys and
   settings). Repeated with the same release: borderless loaded and kept on quit. Check options.set after test
   sessions that switch display modes; restore from the session-start backup.
+
+### 2026-10-12 Nexus report "3D blurrier with the mod": game screenshots were 1920x1080 (2.1.2)
+- Report (zill01, Nexus, 4K, RTX 5090, 8x MSAA): with the mod the 3D looks blurrier than without; in
+  fullscreen "PrintScreen" saves 1920x1080 and Options shows "Current mode: 1920x1080"; borderless looks
+  blurry too. Their trace's 1920x1080 texture into the 4K target is the main-menu art (stock does the same).
+- **The live picture is native.** New dev request `uiscale 0|1` switches the scaling off and on live, so mod
+  and stock share one mission frame (scratch/ab-live.ps1): same render-target sizes (1305 vs 1304 draws to
+  3840x2160, 6 to 1920x1080 in both), detail score (new `imgtool sharp`) mod 7.30 / stock 7.17 / mod 7.05 in
+  fullscreen, 7.29 / 7.16 / 7.06 in borderless (the drift is the mission's time of day; a 1080p upscale would
+  halve it), 2x crops alike (captures/blur/live-fs). Post-process constants: all screen sizes and texel sizes
+  are 3840x2160 except lens effects' c3.xy (960,540 vs 1920,1080) and c17.zw textureDims_LR (1920x1080 vs
+  3840x2160); per the shader source neither is used in normal view (thermal/drone vision only).
+- **The game's own screenshot was the 1080p picture.** PrintScreen saves a JPEG (My Games\gates of hell\
+  screenshots): 1920x1080 with the mod, 3840x2160 with `uiscale 0`. Staging-triggered trace (dev `fix
+  tracestaging on`): the game makes a CPU-readable texture at its client size, a GPU texture from its desc,
+  ResolveSubresource from the 3840x2160 x8 backbuffer into 1920x1080 (size mismatch; the driver shrank the
+  frame), copies and saves at the readable texture's size (no D3DX: its own encoder). Fix (rule 4,
+  context.cpp/device.cpp): a CPU-readable, unbound, single-sample texture at exactly the logical size is made
+  at the real size; the GPU texture follows from its desc, so the resolve is same-size again. First tried also
+  resolving into a real-size twin and redirecting the copy: unnecessary once seen that the game copies the
+  desc, removed. `fix noshot on` for A/B. Texture stats: the game makes no other staging textures.
+- Evidence (captures/shots): fullscreen and borderless, menu and mission, fixed 3840x2160, stock 3840x2160,
+  unfixed 1920x1080; mission detail fixed 7.31 / stock 7.27 / unfixed 3.36 at screen scale (unfixed-vs-fixed.png
+  is the reported blur). proxytest: new case (logical-size readback made real, a 256x256 one as asked), PASSED.
+  Update check 15 of 16 PASS (menu 43.8 dB, Exit prompt 50.6 dB and 0 of 253 odd frames, Options, mission menu,
+  all log checks, profile restored); the FAIL was its own "put back": an older dev build was installed.
+- **Ethan: borderless 4K -> Fullscreen 4K rendered 1080p.** Reproduced with Resolution 3840x2160: ResizeTarget
+  3840x2160, stays 4K. His borderless profile had Resolution 1920x1080 (scratch/settings-backup/
+  borderless-20261005-235013); borderless ignores it, Fullscreen applies it: the game's own behaviour (NOTES
+  History 18). The mod's "Current mode 1920x1080" in Options makes this easy to misread; Nexus page text now
+  says what it means and to check Resolution when leaving borderless.
+- Version 2.1.2 (version.rc, package.ps1, log line, README, build.cmd, NOTES, PLAN). Release built
+  (build/release/Goh4kMod-2.1.2.zip) and installed; its game screenshot is 3840x2160, no goh4k.log. Ethan's
+  profile byte-identical to the session-start backup (scratch/settings-backup/blur-20261012-004207).

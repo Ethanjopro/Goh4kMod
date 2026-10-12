@@ -52,6 +52,8 @@ bool UiProjectionStuckReal(ULONGLONG now);
 // hook install uses), logged as a warning. False if it was off.
 // The caller resyncs the window (input.h NotifyGameWindowSizeChanged).
 bool UiScaleShutOff(const char* why);
+// Dev A/B (diagnostics request "uiscale 0|1"): k = 1 while on, and the game is resynced to its real size.
+void SetUiDevUnscaled(bool on);
 
 // What the mod did this session, summed up in the log at unload (LogUiSessionSummary).
 struct UiCounters {

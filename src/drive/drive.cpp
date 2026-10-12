@@ -89,7 +89,7 @@ static WORD VkFromName(const std::string& n) {
         {"esc", VK_ESCAPE}, {"enter", VK_RETURN}, {"space", VK_SPACE}, {"tab", VK_TAB}, {"backspace", VK_BACK},
         {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT}, {"home", VK_HOME}, {"end", VK_END},
         {"pgup", VK_PRIOR}, {"pgdn", VK_NEXT}, {"insert", VK_INSERT}, {"delete", VK_DELETE}, {"shift", VK_SHIFT},
-        {"ctrl", VK_CONTROL}, {"alt", VK_MENU}, {"pause", VK_PAUSE}, {"win", VK_LWIN}};
+        {"ctrl", VK_CONTROL}, {"alt", VK_MENU}, {"pause", VK_PAUSE}, {"win", VK_LWIN}, {"prtsc", VK_SNAPSHOT}};
     for (auto& e : names)
         if (_stricmp(n.c_str(), e.name) == 0) return e.vk;
     return 0;

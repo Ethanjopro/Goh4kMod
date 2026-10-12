@@ -515,6 +515,21 @@ int main(int argc, char** argv) {
         if (t) t->GetDesc(&o), t->Release();
         CHECK(o.Width == (UINT)realW && o.Height == (UINT)realH, "ui-scale: a screen-size render target is created as asked (%ux%u)",
               o.Width, o.Height);
+        // Rule 4: the game's screenshot readback (CPU-readable, at the client size it was told) is made at the real
+        // size; other CPU-readable textures as asked.
+        D3D11_TEXTURE2D_DESC rd = {(UINT)lw, (UINT)lh, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D11_USAGE_STAGING, 0,
+                                   D3D11_CPU_ACCESS_READ, 0};
+        const UINT sizes[] = {0, 256};  // 0: the logical screen size
+        for (UINT size : sizes) {
+            if (size) rd.Width = rd.Height = size;
+            o = {};
+            t = nullptr;
+            dev->CreateTexture2D(&rd, nullptr, &t);
+            if (t) t->GetDesc(&o), t->Release();
+            UINT ww = size ? size : (UINT)realW, wh = size ? size : (UINT)realH;
+            CHECK(o.Width == ww && o.Height == wh, "screenshot: a CPU-readable %ux%u texture is made %ux%u", rd.Width,
+                  rd.Height, o.Width, o.Height);
+        }
         D3D11_VIEWPORT vp = {0, 0, (float)lw, (float)lh, 0, 1}, back = {};
         ctx->RSSetViewports(1, &vp);
         UINT nvp = 1;

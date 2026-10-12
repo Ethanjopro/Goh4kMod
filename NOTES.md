@@ -8,7 +8,8 @@ does, why, where things are, and a playbook for when a game update breaks it.
 
 The player keeps the game at the monitor's own resolution. Our `d3d11.dll` and `dxgi.dll` sit in the
 game's `binaries\x64` and wrap the game's D3D11 device, contexts and swapchain, but rendering stays
-native: no texture, swapchain or display mode is changed. Ten user32 functions are hooked with MinHook so
+native: no render target, swapchain or display mode is changed (only the game's screenshot readback texture
+is made at the real size, History 17). Ten user32 functions are hooked with MinHook so
 the game sees its client area, and the mouse, divided by k (2 at 4K, 4/3 at 1440p): real height / 1080 on
 16:9 and wider screens, real width / 1920 on narrower ones, so the logical screen is never smaller than
 1920x1080 (2560x1600 -> 1920x1200; 1920x1200 isn't scaled). Its UI therefore lays out at its 1080p size and
@@ -122,6 +123,20 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
     surfaces it draws are kept: rule 1 now follows the projection. A self-check resyncs when the UI
     stays projected at the real size for 250 ms while k > 1 (any path that skips our WM_SIZE). Options'
     "Current mode" then shows the real size (3840x2160), as in the stock game.
+17. **The game's own screenshots** (2.1.2, Nexus report 2026-10-12: "3D blurrier with the mod"). PrintScreen
+    saves a JPEG in My Games\gates of hell\screenshots: the game makes a CPU-readable texture at its client
+    size, a GPU texture with that one's desc, resolves the backbuffer into it, copies and saves at the readable
+    texture's size. With the mod that was 1920x1080 at 4K (the driver shrank the frame in the size-mismatched
+    resolve), so screenshots looked blurry next to stock ones. Rule 4 (context.cpp, device.cpp): a CPU-readable
+    texture at exactly the logical size is made at the real size (the game makes no other). `fix noshot on`
+    for A/B. The live 3D itself was never affected: a live A/B in one mission (dev request `uiscale 0|1`)
+    gave the same render-target sizes and detail (mod 7.30, stock 7.17, mod 7.05 in fullscreen; the same in
+    borderless; the drift is the mission's time of day), captures/blur. Only two post-process constants
+    follow the client size, neither used in normal view: lens effects' c3.xy (960,540 vs 1920,1080) and
+    textureDims_LR (c17.zw, thermal/drone vision only).
+18. **Borderless -> Fullscreen** applies the Resolution setting (ResizeTarget with it); borderless ignores it
+    and always uses the desktop size. A borderless player with Resolution 1920x1080 who switches to Fullscreen
+    gets 1080p, with or without the mod (Ethan, 2026-10-12; his profile had 1920x1080 from earlier tests).
 
 ## What the mod relies on in the game (check these after an update)
 
@@ -137,6 +152,7 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 | draws popup backdrops with 0..1 in an element's first frame and logical / texture size after (rule 3) | wrong backdrop for some frames | dev build logs `ui check ... DISAGREES` | update check burst + dev log |
 | draws all UI with one vertex shader, learnt from rule-1 draws | rule 3 never fires: backdrops magnified | — | no `recognised as the UI's` line; summary shows 0 UI shaders |
 | makes its cursors with CreateIconIndirect | cursor stays 32 px | — | `drive cursor` |
+| saves screenshots through one CPU-readable texture at its client size, the GPU copy made from its desc (rule 4) | screenshots at 1920x1080 again, or a wrong picture | nothing automatic | `screenshot: readback texture` log line; `drive key prtsc` + the JPEG's size |
 | creates its device with D3D11CreateDeviceAndSwapChain and its swapchain with IDXGIFactory::CreateSwapChain, from call_to_arms.exe | the mod does nothing (safe) | — | no `health:` line |
 | imports only D3D11CreateDeviceAndSwapChain and CreateDXGIFactory from d3d11/dxgi | an export our stubs lack: the game won't start | — | playbook step 2 |
 | saves the client size as its resolution in a window smaller than its monitor | (why such windows aren't scaled) | — | — |
@@ -168,7 +184,7 @@ top says whether this is the build the mod version was verified with
   `scratch/logs/`; diagnostics in `captures/`).
 - `build.cmd release`: release DLLs (`/DGOH4K_RELEASE`: settings next to the DLL, no log (Ethan, 2.1: the
   log-only work is compiled out too, `kLogging`), diagnostics off, no local paths embedded), packaged as
-  `build/release/Goh4kMod-2.1.1.zip`. `package.ps1`
+  `build/release/Goh4kMod-2.1.2.zip`. `package.ps1`
   refuses to package a DLL that contains the user name or project path.
 - Tests (run with the game closed):
   - `build\proxytest.exe`: wrapper smoke test, diagnostics round trip, ratio math, and native-scaling
@@ -215,6 +231,9 @@ top says whether this is the build the mod version was verified with
 4. **A visual glitch:** use the dev build (`Diagnostics=1`).
    - Get a reference with `UiScale=0` (stock native), then `UiScale=1`, same scene: `capture x` +
      `trace x` in `captures/request.txt`. `fix nouivp on|off` toggles the viewport rules live.
+   - Same scene without a restart: `uiscale 0` switches the scaling off live (the game is resynced to its
+     real size; mod-layout clicks then miss), `uiscale 1` back on (scratch/ab-live.ps1, not in git, does mod/stock/mod in a mission).
+   - `fix tracestaging on`: the next CPU-readable texture the game makes starts a trace (its screenshot path).
    - Hand both traces to the capture-analyst agent: which draws have a viewport that doesn't match their
      target, and which screen-sized textures the UI samples.
    - `dumprt <event>|ps:<id> [tag] [cb]` saves an event's output and prints its constant buffers.
@@ -251,7 +270,7 @@ top says whether this is the build the mod version was verified with
 - Proton / Steam Deck: the mod is inert by default (Proton's own d3d11/dxgi are used).
 - Windowed mode (a window smaller than its monitor) isn't scaled: the UI is its stock native size there.
 - Options' read-only "Current mode" line shows the logical size (1920x1080 at 4K), or the real size after a
-  borderless APPLY (History 16).
+  borderless APPLY (History 16). Players read it as "the game renders at 1080p"; it doesn't (History 17).
 - After a borderless APPLY one frame shows the UI at its native size (the game projects it at the real size
   for that frame).
 - UI text and icons are the 1080p art magnified, as in 1.0. 1-pixel UI lines draw one real pixel wide.

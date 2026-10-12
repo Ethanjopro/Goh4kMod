@@ -2,6 +2,7 @@
 // creation (recorded for stats and traces when diagnostics are on).
 #include "wrappers.h"
 #include "diag.h"
+#include "scale.h"
 #include <atomic>
 
 namespace goh4k {
@@ -203,6 +204,8 @@ HRESULT STDMETHODCALLTYPE WrappedDevice::CreateDeferredContext3(UINT flags, ID3D
 HRESULT STDMETHODCALLTYPE WrappedDevice::CreateTexture2D(const D3D11_TEXTURE2D_DESC* pDesc,
                                                          const D3D11_SUBRESOURCE_DATA* pInitialData,
                                                          ID3D11Texture2D** ppTexture2D) {
+    D3D11_TEXTURE2D_DESC real;
+    if (pDesc && !pInitialData && UiScaleConfigured() && ScreenshotReadbackSize(*pDesc, &real)) pDesc = &real;
     HRESULT hr = m_real->CreateTexture2D(pDesc, pInitialData, ppTexture2D);
     if (SUCCEEDED(hr) && pDesc && ppTexture2D) RecordTextureCreate(*pDesc, pInitialData != nullptr);
     return hr;

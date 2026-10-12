@@ -35,6 +35,8 @@ The game has its own anti-cheat, and this mod was tested in single-player only.
 [list]
 [*]No game files or settings are changed. The mod adds two DLLs that sit between the game and DirectX 11.
 [*]Works in Fullscreen and Windowed borderless. In a smaller "Windowed" window, and at 1920x1080 and below, it changes nothing.
+[*]OPTIONS > VIDEO shows "Current mode 1920x1080": that is the interface size the mod gives the game. The game still renders at your Resolution.
+[*]Windowed borderless always uses your desktop resolution; Fullscreen uses the Resolution setting. Switching from borderless to Fullscreen, check Resolution first.
 [*]Not compatible with ReShade, DXVK or other mods that use d3d11.dll or dxgi.dll.
 [*]Something wrong after a game update? Uninstall and check here for a new version.
 [/list]

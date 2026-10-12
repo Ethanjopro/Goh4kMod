@@ -19,6 +19,10 @@ namespace goh4k {
 class WrappedDevice;
 struct UiState;
 
+// Rule 4 (context.cpp, screenshots): true if d is the game's screenshot readback texture made at the logical
+// screen size; *real is then d at the real size.
+bool ScreenshotReadbackSize(const D3D11_TEXTURE2D_DESC& d, D3D11_TEXTURE2D_DESC* real);
+
 class WrappedContext final : public Fwd_ID3D11DeviceContext4 {
 public:
     WrappedContext(ID3D11DeviceContext* real, WrappedDevice* device, bool immediate);

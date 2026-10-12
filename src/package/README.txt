@@ -1,4 +1,4 @@
-Goh4kMod 2.1.1
+Goh4kMod 2.1.2
 Call to Arms - Gates of Hell: Ostfront: play at your monitor's full resolution, interface at its 1080p size.
 For monitors above 1080p (1440p, 4K).
 

@@ -12,11 +12,20 @@ static const uint64_t kOffBit = 1ull << 63;  // set once by UiScaleShutOff; no U
 static std::atomic<uint32_t> g_generation{1};
 // x | y << 32 (both signed)
 static std::atomic<uint64_t> g_origin{0};
+static std::atomic<bool> g_devUnscaled{false};  // dev A/B (diag request "uiscale 0"): k = 1 live
 
 static UINT Field(uint64_t v, int i) { return (UINT)((v >> (16 * i)) & 0xffff); }
 
 static Ratio FactorOf(uint64_t v) {
+    if (g_devUnscaled.load(std::memory_order_relaxed)) return Ratio{};
     return (v & kCoversBit) ? RatioForScreen(Field(v, 0), Field(v, 1) & 0x7fff, 1920, 1080) : Ratio{};
+}
+
+void SetUiDevUnscaled(bool on) {
+    if (g_devUnscaled.exchange(on) == on) return;
+    g_generation.fetch_add(1, std::memory_order_acq_rel);
+    Log("ui: dev A/B: scaling %s live", on ? "off" : "back on");
+    NotifyGameWindowSizeChanged();
 }
 
 static UiState Decode(uint64_t v) {

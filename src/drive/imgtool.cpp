@@ -5,6 +5,8 @@
 //   diff <a> <b> [heat.png]                  compare; the larger image is box-downscaled to the smaller
 //                                            if the sizes differ by an integer factor. Prints mean abs
 //                                            difference, PSNR and % of pixels off by more than 16 or 48.
+//   sharp <in> [x y w h]                     detail measure: mean absolute luma difference between
+//                                            neighbouring pixels (higher = sharper), whole image or region
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "../shared/image.h"
@@ -50,7 +52,7 @@ static bool Save(const wchar_t* p, const Bgr& b) {
 int wmain(int argc, wchar_t** argv) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (argc < 2) {
-        printf("usage: imgtool crop|side|resize|diff ... (see source header)\n");
+        printf("usage: imgtool crop|side|resize|diff|sharp ... (see source header)\n");
         return 2;
     }
     std::wstring cmd = argv[1];
@@ -131,6 +133,27 @@ int wmain(int argc, wchar_t** argv) {
                sum / (n * 3.0), signedSum / (n * 3.0), mse > 0 ? 10 * log10(255.0 * 255.0 / mse) : 99.0,
                100.0 * over16 / n, 100.0 * over48 / n);
         if (argc >= 5) Save(argv[4], heat);
+        return 0;
+    }
+    if (cmd == L"sharp" && argc >= 3) {
+        Bgr in;
+        if (!Load(argv[2], &in)) return 1;
+        int x = 0, y = 0, w = in.w, h = in.h;
+        if (argc >= 7) x = _wtoi(argv[3]), y = _wtoi(argv[4]), w = _wtoi(argv[5]), h = _wtoi(argv[6]);
+        x = std::clamp(x, 0, in.w - 2);
+        y = std::clamp(y, 0, in.h - 2);
+        w = std::clamp(w, 2, in.w - x);
+        h = std::clamp(h, 2, in.h - y);
+        auto luma = [&](int px, int py) {
+            const uint8_t* p = &in.px[((size_t)py * in.w + px) * 3];
+            return 0.114 * p[0] + 0.587 * p[1] + 0.299 * p[2];
+        };
+        double sum = 0;
+        size_t n = 0;
+        for (int r = y; r < y + h - 1; ++r)
+            for (int c = x; c < x + w - 1; ++c, ++n)
+                sum += fabs(luma(c + 1, r) - luma(c, r)) + fabs(luma(c, r + 1) - luma(c, r));
+        printf("sharp %dx%d at %d,%d: %.3f\n", w, h, x, y, sum / (2.0 * n));
         return 0;
     }
     printf("bad arguments\n");

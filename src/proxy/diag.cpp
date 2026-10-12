@@ -1,6 +1,7 @@
 // Diagnostics (M2): see diag.h for the request commands. Everything here is idle unless a request or the
 // hotkey asks for something; the per-call cost outside a trace is one relaxed atomic load.
 #include "diag.h"
+#include "scale.h"
 #include "wrappers.h"
 #include "../shared/image.h"
 #include <algorithm>
@@ -25,6 +26,7 @@ static LONG64 g_traceFrame = 0;
 static std::vector<std::string> g_traceLines;
 static int g_traceEvent = 0;
 static bool g_traceWarmup = false;  // first frame of a trace: deferred contexts record, nothing is written
+static int g_traceMoreFrames = 0;   // frames a trace runs on after the one it started in (staging trigger)
 static std::atomic<int> g_traceGen{0};
 static int g_dumpEvent = -1;  // dumprt armed (also for ps: mode)
 static std::string g_dumpPs;  // dumprt ps:<id prefix>: match by pixel shader instead of event number
@@ -575,6 +577,9 @@ static void PollRequests(LONG64 frame, double fps) {
                 g_fixes[a[1]] = a[2] == "on";
             }
             Report(frame, "fix " + a[1] + " " + (a[2] == "on" ? "on" : "off"));
+        } else if (a[0] == "uiscale" && a.size() >= 2) {
+            SetUiDevUnscaled(a[1] == "0");
+            Report(frame, "uiscale " + a[1]);
         } else if (a[0] == "dumpshader" && a.size() >= 2) {
             DumpShader(a[1], frame);
         } else {
@@ -593,6 +598,8 @@ void DiagBeforePresent(IDXGISwapChain* sc, WrappedDevice* device, LONG64 frame) 
             g_traceLines.clear();
             g_traceEvent = 0;
             g_traceFrame = frame + 1;
+        } else if (g_traceMoreFrames > 0) {
+            --g_traceMoreFrames;
         } else {
             FinishTrace(sc);
         }
@@ -659,8 +666,18 @@ void RecordTextureCreate(const D3D11_TEXTURE2D_DESC& d, bool initialData) {
     std::string key = Fmt("%5ux%-5u f%-3d bind=0x%-3x usage=%d msaa=%u mips=%-2u array=%-2u misc=0x%x%s", d.Width,
                           d.Height, (int)d.Format, d.BindFlags, (int)d.Usage, d.SampleDesc.Count, d.MipLevels,
                           d.ArraySize, d.MiscFlags, initialData ? " +data" : "");
-    std::lock_guard<std::mutex> lock(g_statsMutex);
-    ++g_texStats[key];
+    {
+        std::lock_guard<std::mutex> lock(g_statsMutex);
+        ++g_texStats[key];
+    }
+    // A CPU-readable texture (the game's screenshot path): trace from here to the end of the next two frames.
+    if (d.Usage == D3D11_USAGE_STAGING && FixOn("tracestaging") && !TraceActive()) {
+        StartTrace(Fmt("staging-%ux%u", d.Width, d.Height), 0);
+        std::lock_guard<std::mutex> lock(g_traceMutex);
+        g_traceWarmup = false;
+        g_traceMoreFrames = 2;
+        g_traceLines.push_back("(started at CreateTexture2D " + key + ")");
+    }
 }
 
 bool FixOn(const char* name) {

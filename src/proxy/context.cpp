@@ -466,6 +466,27 @@ void STDMETHODCALLTYPE WrappedContext::VSSetShader(ID3D11VertexShader* pVertexSh
     if (pVertexShader != m_vs) m_vs = pVertexShader, m_vsHashKnown = false;
 }
 
+// ---------------------------------------------------------------- 4. screenshots
+// The game's own screenshot (PrintScreen, a JPEG in My Games\gates of hell\screenshots) makes a CPU-readable
+// texture at its client size, a GPU texture with that texture's desc, resolves the backbuffer into the second,
+// copies it into the first and saves what it maps, at the readable texture's size. Stock, the client size is
+// the screen size. With the mod both were the logical size, so the resolve went between two sizes (undefined in
+// D3D11; the driver shrank the frame) and a 4K screenshot came out 1920x1080 (Nexus report, 2026-10-12). The
+// readable texture is now made at the real size (WrappedDevice::CreateTexture2D); the rest follows from its
+// desc. The game makes no other CPU-readable textures. "fix noshot on" switches it off for A/B.
+bool ScreenshotReadbackSize(const D3D11_TEXTURE2D_DESC& d, D3D11_TEXTURE2D_DESC* real) {
+    if (d.Usage != D3D11_USAGE_STAGING || !(d.CPUAccessFlags & D3D11_CPU_ACCESS_READ) || d.BindFlags ||
+        d.SampleDesc.Count != 1 || d.ArraySize != 1 || d.MipLevels != 1)
+        return false;
+    UiState s = UiSnapshot();
+    if (!s.active || d.Width != s.lw || d.Height != s.lh || FixOn("noshot")) return false;
+    *real = d;
+    real->Width = s.bw, real->Height = s.bh;
+    static std::atomic<int> logged{0};
+    if (logged++ < 3) Log("screenshot: readback texture %ux%u made at %ux%u", d.Width, d.Height, s.bw, s.bh);
+    return true;
+}
+
 // ---------------------------------------------------------------- actions
 
 // Arguments are only formatted while a trace is active.

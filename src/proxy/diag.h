@@ -11,6 +11,7 @@
 //                              whose pixel shader id starts with <id>
 //   stats [tag]                textures created so far (by size/format/flags), shaders, fixes
 //   fix <name> on|off          runtime toggle read by the fixes (M3/M4)
+//   uiscale 0|1                live A/B: 0 = k 1 (the game is resynced to its real size), 1 = scaled again
 //   dumpshader <id>            write that shader's bytecode to scratch/shaders/<id>.cso
 #pragma once
 #include "common.h"
