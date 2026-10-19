@@ -22,6 +22,9 @@ struct UiState;
 // Rule 4 (context.cpp, screenshots): true if d is the game's screenshot readback texture made at the logical
 // screen size; *real is then d at the real size.
 bool ScreenshotReadbackSize(const D3D11_TEXTURE2D_DESC& d, D3D11_TEXTURE2D_DESC* real);
+// Buffer-size guard (swapchain.cpp): a swapchain size request for the game window at exactly the logical size
+// while its real client still covers the monitor at k > 1 becomes the real client size. False: leave it.
+bool RealBufferSize(HWND hwnd, UINT* width, UINT* height, const char* call);
 
 class WrappedContext final : public Fwd_ID3D11DeviceContext4 {
 public:

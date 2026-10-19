@@ -106,6 +106,13 @@ extern "C" HRESULT WINAPI Goh4k_CreateSwapChain(IDXGIFactory* factory, IUnknown*
     WrappedDevice* wd = AsWrappedDevice(pDevice);
     Log("IDXGIFactory::CreateSwapChain, %s device", wd ? "our wrapped" : "a foreign");
     if (pDesc) Log("  requested swapchain: %s", DescribeSwapChainDesc(*pDesc).c_str());
+    DXGI_SWAP_CHAIN_DESC guarded;
+    if (pDesc) {
+        guarded = *pDesc;
+        if (RealBufferSize(guarded.OutputWindow, &guarded.BufferDesc.Width, &guarded.BufferDesc.Height,
+                           "CreateSwapChain"))
+            pDesc = &guarded;
+    }
     HRESULT hr = factory->CreateSwapChain(wd ? (IUnknown*)wd->Real() : pDevice, pDesc, ppSwapChain);
     Log("  -> 0x%08lx", hr);
     if (SUCCEEDED(hr) && wd && g_cfg.wrap && ppSwapChain && *ppSwapChain)
@@ -124,6 +131,11 @@ extern "C" HRESULT WINAPI Goh4k_CreateSwapChainForHwnd(IDXGIFactory2* factory, I
         Log("  requested: %ux%u fmt=%d msaa=%u buffers=%u scaling=%d effect=%d flags=0x%x windowed=%d", pDesc->Width,
             pDesc->Height, (int)pDesc->Format, pDesc->SampleDesc.Count, pDesc->BufferCount, (int)pDesc->Scaling,
             (int)pDesc->SwapEffect, pDesc->Flags, pFullscreenDesc ? pFullscreenDesc->Windowed : 1);
+    DXGI_SWAP_CHAIN_DESC1 guarded;
+    if (pDesc) {
+        guarded = *pDesc;
+        if (RealBufferSize(hWnd, &guarded.Width, &guarded.Height, "CreateSwapChainForHwnd")) pDesc = &guarded;
+    }
     HRESULT hr = factory->CreateSwapChainForHwnd(wd ? (IUnknown*)wd->Real() : pDevice, hWnd, pDesc, pFullscreenDesc,
                                                  pRestrictToOutput, ppSwapChain);
     Log("  -> 0x%08lx", hr);

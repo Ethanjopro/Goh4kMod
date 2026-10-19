@@ -74,6 +74,16 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - 2026-10-12 00:42 to 01:37: 12 deploys of dev builds and the 2.1.1 release (d3d11.dll, dxgi.dll) for the blur and
   screenshot work (2026-10-12 entry below), the update check included. 01:37 deploy -Release: the 2.1.2 release
   (d3d11.dll C85CBB73AB08, dxgi.dll 4FFDEF415781), installed now.
+- 2026-10-19 01:58 deploy: d3d11.dll sha256 CFE625640CCE (replaced our previous build)
+- 2026-10-19 01:58 deploy: dxgi.dll sha256 E4BF07468C75 (replaced our previous build)
+- 2026-10-19 02:07 deploy: d3d11.dll sha256 C85CBB73AB08 (replaced our previous build)
+- 2026-10-19 02:07 deploy: dxgi.dll sha256 4FFDEF415781 (replaced our previous build)
+- 2026-10-19 02:17 deploy: d3d11.dll sha256 44EDB485ACD5 (replaced our previous build)
+- 2026-10-19 02:17 deploy: dxgi.dll sha256 1D8664B20112 (replaced our previous build)
+- 2026-10-19 02:21 deploy: d3d11.dll sha256 C85CBB73AB08 (replaced our previous build)
+- 2026-10-19 02:21 deploy: dxgi.dll sha256 4FFDEF415781 (replaced our previous build)
+- 2026-10-19 02:21 deploy: d3d11.dll sha256 D7B5BE3ADE1A (replaced our previous build)
+- 2026-10-19 02:21 deploy: dxgi.dll sha256 CD1DE4F10EA4 (replaced our previous build)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -660,3 +670,45 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - Version 2.1.2 (version.rc, package.ps1, log line, README, build.cmd, NOTES, PLAN). Release built
   (build/release/Goh4kMod-2.1.2.zip) and installed; its game screenshot is 3840x2160, no goh4k.log. Ethan's
   profile byte-identical to the session-start backup (scratch/settings-backup/blur-20261012-004207).
+
+### 2026-10-19 Project folder organized (Ethan: "organize the project folder")
+- Nothing deleted, no tracked file moved; paths the scripts and the proxy use stay where they are
+  (captures/ root for request.txt, status.txt, requests.log and new diagnostics; scratch/ root for deployed.txt,
+  baseline-binaries-x64.txt, update-check-*.txt; logs/, settings-backup/, phase1/, shaders/).
+- Moved, so older journal entries that name these files bare now find them here:
+  - captures/2026MMDD-*: the proxy's capture/trace/stats output (764 files) -> captures/diag/2026-MM-DD/.
+  - captures/m3-*.png, m4-*.png (milestone evidence) -> captures/m3/, captures/m4/.
+  - scratch/deployed-*.txt (37) -> scratch/deploy-history/; uninstall.ps1 writes new ones there
+    (gamefolder-common.ps1 $RecordDir). Self-test (test-gamefolder.ps1) PASSED.
+  - scratch/*.png (2026-10-02 crops, rel-menu.png) -> scratch/images/.
+  - scratch/ab-blur.ps1, ab-live.ps1, shot-check.ps1 (include path now ..\..\src\scripts), an.awk, segments.*,
+    vp.*, gamepid.txt, switch-logline.txt, shots-before.txt -> scratch/scripts/.
+  - scratch/minhook-1.3.3.zip and minhook-src/ (source of the vendored copy) -> scratch/downloads/.
+- CLAUDE.md named the old project path (Documents\Claude-Projects\Goh4kMod); now Documents\Claude\Goh4kMod.
+
+### 2026-10-19 Nexus reports reviewed; "selection outlines" bug not reproduced
+- Nexus (read 2026-10-19): Bugs tab, Adiday 16 Oct, 2.1.1, 4K TV: "Selection outlines (yellow) render at 1080p
+  size and offset". Posts: zill01 (blur, 2.1.1, answered by 2.1.2), CaiusAfterHours 17 Oct ("runs at lower
+  resolution"). Nexus still serves 2.1.1; 2.1.2 (1080p screenshots fixed) was never uploaded.
+- Hypothesis from the shader source (lenseffects_v2 multi-channel mask prepass reads an MSAA mask with
+  Load(SV_Position)): the game makes the mask at the client size. **Refuted** in game (dev build, 4K Fullscreen,
+  8x MSAA, Absolute Zero, squad drag-selected; mod vs live `uiscale 0`): no outline pass runs (no draw binds t6),
+  no 1920x1080 MSAA texture in any trace or stats, mod and stock draw sequences identical apart from rule-2
+  viewports. Selection circles, hover tooltip and units at the barn's corner: same place mod vs stock
+  (captures/outline: side-mod-stock.png, side-hover.png, side-barn.png; capture-analyst report).
+- Tooling: scratch/scripts/ol-grab.ps1 (snap + capture + trace + stats of the running game into captures/outline).
+- Restored: 2.1.2 release installed again (deploy -Release), profiles byte-identical to
+  scratch/settings-backup/live-20261019-015829. No code changed.
+
+### 2026-10-19 2.1.3: buffer-size guard (Ethan: convert, then upload with notes)
+- swapchain.cpp RealBufferSize: ResizeBuffers/ResizeBuffers1 and a later CreateSwapChain/ForHwnd on the game window
+  asking for exactly the logical size, while the real client (read at call time) covers its monitor at k > 1, get the
+  real client size; logged `guard:` (dev). Present self-check: WARNING if the buffers are logical at two 2 s checks.
+  NOTES History 19.
+- proxytest PASSED, new: ResizeBuffers(1920x1080) on the 4K window gives 3840x2160 buffers, GetClientRect stays
+  logical, ResizeBuffers(0x0) stays real; dev log `guard: ResizeBuffers asked for the logical size 1920x1080 while
+  the client is 3840x2160: made 3840x2160`. In the game the guard never fires (CreateSwapChain 3840x2160,
+  ResizeBuffers 0x0). Update check 16 of 16 PASS (captures/update-check/20261019-021704), no warnings.
+- Release 2.1.3 (version.rc x2, package.ps1, util.cpp, README with what's new for 2.1.2/2.1.3 and the
+  "Current mode" note, build.cmd, NOTES, PLAN): build/release/Goh4kMod-2.1.3.zip, test-gamefolder PASSED,
+  installed (deploy -Release); main menu at the 1080p UI size, no goh4k.log (captures/outline/release-213-menu.png).

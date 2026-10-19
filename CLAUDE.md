@@ -15,7 +15,7 @@ the loop.
 - deploy.cmd and uninstall.cmd are the only way files get into or out of the game folder.
 
 ## Containment
-- Everything stays in C:\Users\bigep\Documents\Claude-Projects\Goh4kMod: src/, build/, tools/ (portable
+- Everything stays in C:\Users\bigep\Documents\Claude\Goh4kMod: src/, build/, tools/ (portable
   tools), captures/, scratch/.
 - Reading the Steam install and the game folder is fine. The game's binaries\x64 folder (path in
   .claude/game-bin.txt) is the only outside place that changes, and only through deploy.cmd and

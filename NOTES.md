@@ -138,6 +138,18 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
     and always uses the desktop size. A borderless player with Resolution 1920x1080 who switches to Fullscreen
     gets 1080p, with or without the mod (Ethan, 2026-10-12; his profile had 1920x1080 from earlier tests).
 
+19. **Buffer-size guard** (2.1.3, Ethan's choice: convert, not just warn). The game sizes its buffers with
+    ResizeBuffers(0x0) (DXGI reads the real client) and creates swapchains at its mode size, so they always
+    match the screen. A request at exactly the logical size (what the client size it is told would give) would
+    be a 1080p picture stretched over 4K with k still 2 and the rules silent. ResizeBuffers/ResizeBuffers1 and a
+    later CreateSwapChain/ForHwnd on the game window get the real client size instead (swapchain.cpp
+    RealBufferSize), only while that client really covers its monitor at k > 1, read at call time: a
+    deliberate Fullscreen 1920x1080 (the display is 1080p by then) is never changed. Never seen in the game;
+    proxytest covers it. Dev log: `guard:` lines, and a WARNING if the buffers are logical at two 2 s checks.
+20. **"Selection outlines at 1080p size and offset"** (Nexus bug, 2026-10-16, 2.1.1, 4K TV): not reproduced at
+    4K Fullscreen 8x MSAA (LOG 2026-10-19). The lens-effects outline pass (shader.pak lenseffects_v2, a mask read
+    with Texture2DMS.Load at screen pixels) never ran in normal play; selection circles and tooltips match stock.
+
 ## What the mod relies on in the game (check these after an update)
 
 | The game... | If an update changes it | What the mod does | How it shows |
@@ -184,7 +196,7 @@ top says whether this is the build the mod version was verified with
   `scratch/logs/`; diagnostics in `captures/`).
 - `build.cmd release`: release DLLs (`/DGOH4K_RELEASE`: settings next to the DLL, no log (Ethan, 2.1: the
   log-only work is compiled out too, `kLogging`), diagnostics off, no local paths embedded), packaged as
-  `build/release/Goh4kMod-2.1.2.zip`. `package.ps1`
+  `build/release/Goh4kMod-2.1.3.zip`. `package.ps1`
   refuses to package a DLL that contains the user name or project path.
 - Tests (run with the game closed):
   - `build\proxytest.exe`: wrapper smoke test, diagnostics round trip, ratio math, and native-scaling
@@ -202,7 +214,7 @@ top says whether this is the build the mod version was verified with
   `scratch/baseline-binaries-x64.txt`. After a game update, retake that baseline (Phase 1 step) or the
   check will report the updated game files.
 - To bump the version, change it in `src/*/version.rc`, `$Version` in `package.ps1`, the log line in
-  `util.cpp`, and the README title.
+  `util.cpp`, the README title, `build.cmd`'s header comment, the zip name above and in PLAN.md.
 
 ## Playbook: the game updated and something broke
 
@@ -232,7 +244,7 @@ top says whether this is the build the mod version was verified with
    - Get a reference with `UiScale=0` (stock native), then `UiScale=1`, same scene: `capture x` +
      `trace x` in `captures/request.txt`. `fix nouivp on|off` toggles the viewport rules live.
    - Same scene without a restart: `uiscale 0` switches the scaling off live (the game is resynced to its
-     real size; mod-layout clicks then miss), `uiscale 1` back on (scratch/ab-live.ps1, not in git, does mod/stock/mod in a mission).
+     real size; mod-layout clicks then miss), `uiscale 1` back on (scratch/scripts/ab-live.ps1, not in git, does mod/stock/mod in a mission).
    - `fix tracestaging on`: the next CPU-readable texture the game makes starts a trace (its screenshot path).
    - Hand both traces to the capture-analyst agent: which draws have a viewport that doesn't match their
      target, and which screen-sized textures the UI samples.

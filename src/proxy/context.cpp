@@ -28,7 +28,7 @@ void WrappedContext::ResetTrackedState() {
 //    does. Only while the UI is projected at the logical size (UiFollowProjection).
 // 2. Tone-map/glow passes on screen-sized targets set the logical-screen viewport, so the image covers only
 //    the top-left part: applied as the real screen. Stock native 4K never sets a 1920x1080 viewport on a
-//    3840x2160 target (captures/20261002-122821-mission-trace.txt).
+//    3840x2160 target (captures/diag/2026-10-02/20261002-122821-mission-trace.txt).
 // 3. Screen-sized textures the UI draws as images (the blurred backdrop behind prompts) are sampled with
 //    coordinates of logical / texture size, so only their top-left part shows, magnified. Such a UI draw (see
 //    UiBeforeDraw) gets a stand-in texture k times as large with the image copied 1:1 into its top-left, so

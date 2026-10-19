@@ -222,7 +222,7 @@ void Init(HMODULE self) {
                         FILE_ATTRIBUTE_NORMAL, nullptr);
 #endif
 
-    Log("Goh4kMod 2.1.2 d3d11 proxy (%s build), built %s %s",
+    Log("Goh4kMod 2.1.3 d3d11 proxy (%s build), built %s %s",
 #ifdef GOH4K_RELEASE
         "release",
 #else

@@ -1,6 +1,14 @@
-Goh4kMod 2.1.2
+Goh4kMod 2.1.3
 Call to Arms - Gates of Hell: Ostfront: play at your monitor's full resolution, interface at its 1080p size.
 For monitors above 1080p (1440p, 4K).
+
+The game renders at your Resolution. OPTIONS > VIDEO "Current mode 1920x1080" is the interface size the
+mod gives the game, not the render size.
+
+NEW IN 2.1.3: a safety check keeps the picture at your monitor's full resolution if the game ever asks
+for its buffers at the interface size.
+NEW IN 2.1.2: the game's own screenshots (PrintScreen) are saved at full resolution again (they were
+1920x1080 with 2.1.1, which made the game look blurrier than it was).
 
 
 INSTALL

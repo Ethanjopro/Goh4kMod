@@ -83,6 +83,7 @@ $logLines += "- $(Get-Stamp) uninstall check: $msg"
 if (Test-Path $DeployedList) {
     # Two uninstalls in the same second (the self-test) must not collide.
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+    New-Item -ItemType Directory -Force $RecordDir | Out-Null
     $dest = Join-Path $RecordDir "deployed-$stamp.txt"
     for ($n = 1; Test-Path -LiteralPath $dest; $n++) { $dest = Join-Path $RecordDir "deployed-$stamp-$n.txt" }
     Move-Item -LiteralPath $DeployedList $dest

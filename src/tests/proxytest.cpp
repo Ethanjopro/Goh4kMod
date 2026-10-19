@@ -581,6 +581,23 @@ int main(int argc, char** argv) {
 
     if (scaled) {
         CheckStaleSlot0(dev, ctx, sc, (UINT)realW, (UINT)realH);
+        // Buffer-size guard: buffers asked at the logical size while the window covers the monitor stay real.
+        {
+            hr = sc->ResizeBuffers(0, (UINT)lw, (UINT)lh, DXGI_FORMAT_UNKNOWN, 0);
+            DXGI_SWAP_CHAIN_DESC g = {};
+            sc->GetDesc(&g);
+            CHECK(SUCCEEDED(hr) && g.BufferDesc.Width == (UINT)realW && g.BufferDesc.Height == (UINT)realH,
+                  "guard: ResizeBuffers(%ldx%ld, the logical size) gives real buffers (%ux%u, 0x%08lx)", lw, lh,
+                  g.BufferDesc.Width, g.BufferDesc.Height, hr);
+            RECT gr = {};
+            GetClientRect(hwnd, &gr);
+            CHECK(gr.right == lw && gr.bottom == lh, "guard: GetClientRect still logical after it (%ldx%ld)", gr.right,
+                  gr.bottom);
+            hr = sc->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0);
+            sc->GetDesc(&g);
+            CHECK(SUCCEEDED(hr) && g.BufferDesc.Width == (UINT)realW, "guard: ResizeBuffers(0x0) stays real (%ux%u)",
+                  g.BufferDesc.Width, g.BufferDesc.Height);
+        }
         // Our window procedure replaced by the window's own (what a program that subclassed before us puts back):
         // within a few seconds the mod subclasses again and resyncs the game with a logical WM_SIZE.
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&TestWndProc);

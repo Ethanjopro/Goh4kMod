@@ -15,7 +15,7 @@ if ($TestDir) {
     $DeployedList = "$Root\scratch\deployed.txt"
     $Baseline = "$Root\scratch\baseline-binaries-x64.txt"
     $BackupDir = "$Root\scratch\stock-backup"
-    $RecordDir = "$Root\scratch"  # uninstall keeps old deployed.txt files here as deployed-<time>.txt
+    $RecordDir = "$Root\scratch\deploy-history"  # uninstall keeps old deployed.txt files here as deployed-<time>.txt
     $LogFile = "$Root\LOG.md"
 }
 $GameRoot = Split-Path (Split-Path $GameBin)

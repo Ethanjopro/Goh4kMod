@@ -8,7 +8,7 @@ rem        build.cmd drive     build build\drive\drive.exe (input + screenshots)
 rem                            (crop/side/diff); their own folder so they never pick up our d3d11.dll
 rem        build.cmd tests     build build\proxytest.exe
 rem        build.cmd release   build the shareable DLLs (settings next to the DLL, no local paths embedded)
-rem                            and package build\release\Goh4kMod-2.1.2.zip
+rem                            and package build\release\Goh4kMod-2.1.3.zip
 rem        build.cmd check     compile a tiny test program and confirm the output is x64
 setlocal
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"

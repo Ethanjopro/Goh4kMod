@@ -45,6 +45,27 @@ void WrappedSwapChain::UpdateUiScale(const char* why) {
         SetUiClient((UINT)r.right, (UINT)r.bottom, ClientCoversMonitor(m_hwnd, r.right, r.bottom), why);
 }
 
+// Buffer-size guard (2.1.3). The game resizes with ResizeBuffers(0x0), which DXGI resolves from the real client,
+// and creates its swapchains at its mode size, so its buffers always match the screen. But the client size it is
+// told is the logical one: a request at exactly that size would give a 1080p picture stretched over a 4K window,
+// with k still 2 and the full-screen rules silent (they see buffers == logical). Such a request is given the real
+// client size. The client is read now, not from the state: after a real switch to a 1080p mode the window is
+// already 1080p (or no longer covers a monitor), so a deliberate 1920x1080 is never changed.
+bool RealBufferSize(HWND hwnd, UINT* width, UINT* height, const char* call) {
+    if (!width || !height || !*width || !*height || !UiScaleConfigured() || !hwnd || !IsGameWindow(hwnd)) return false;
+    UiState s = UiSnapshot();
+    if (!s.active || *width != s.lw || *height != s.lh) return false;
+    RECT r = {};
+    if (!GetClientRect(hwnd, &r) || IsIconic(hwnd)) return false;  // our module's call: real
+    UINT cw = (UINT)r.right, ch = (UINT)r.bottom;
+    if ((cw == *width && ch == *height) || !ClientCoversMonitor(hwnd, cw, ch)) return false;
+    static std::atomic<int> logged{0};
+    if (logged++ < 3) Log("guard: %s asked for the logical size %ux%u while the client is %ux%u: made %ux%u", call,
+                          *width, *height, cw, ch, cw, ch);
+    *width = cw, *height = ch;
+    return true;
+}
+
 // The game's own mode change (input.h NotifyGameWindowSizeChanged). Not after ResizeBuffers: the game calls
 // that in answer to WM_SIZE, so a resync there would loop.
 void WrappedSwapChain::ResyncAfterModeChange() {
@@ -118,6 +139,21 @@ static void LogHealth() {
         s.k.d, UiScaleConfigured() ? "" : "; native scaling is off");
 }
 
+// Dev self-check for the guard's case arriving by another path: buffers at the logical size while the real
+// client is larger and k > 1, at two checks in a row (a mode switch leaves the buffers stale for a moment).
+static void CheckBufferSize() {
+    static int seen = 0;
+    static bool warned = false;
+    UiState s = UiSnapshot();
+    bool bad = s.active && s.bw == s.lw && s.bh == s.lh && (s.cw != s.bw || s.ch != s.bh);
+    seen = bad ? seen + 1 : 0;
+    if (seen == 2 && !warned) {
+        warned = true;
+        Log("WARNING: the swapchain buffers are %ux%u, the logical size, while the client is %ux%u at k %lld/%lld: "
+            "the picture is upscaled", s.bw, s.bh, s.cw, s.ch, s.k.n, s.k.d);
+    }
+}
+
 void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     if (flags & DXGI_PRESENT_TEST) return;
     ++m_frames;
@@ -143,6 +179,7 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
             CheckGameWindow();
             if (m_device) m_device->ReleaseStandIns(WrappedDevice::kStandInIdleMs);
             if (first && kLogging) LogHealth();
+            if (kLogging) CheckBufferSize();
         }
     }
     if (g_cfg.diagnostics && now - m_statusTick >= (ULONGLONG)g_cfg.statusMs) WriteStatus(now);
@@ -193,6 +230,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers(UINT BufferCount, UINT
                                                           DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     Log("ResizeBuffers(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)NewFormat,
         SwapChainFlags);
+    RealBufferSize(m_hwnd, &Width, &Height, "ResizeBuffers");
     HRESULT hr = m_real->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
     Log("  -> 0x%08lx", hr);
     if (SUCCEEDED(hr)) UpdateUiScale("ResizeBuffers");
@@ -206,6 +244,7 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers1(UINT BufferCount, UIN
                                                            IUnknown* const* ppPresentQueue) {
     Log("ResizeBuffers1(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)Format,
         SwapChainFlags);
+    RealBufferSize(m_hwnd, &Width, &Height, "ResizeBuffers1");
     HRESULT hr =
         m_real->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     Log("  -> 0x%08lx", hr);
