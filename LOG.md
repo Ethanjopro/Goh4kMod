@@ -712,3 +712,6 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - Release 2.1.3 (version.rc x2, package.ps1, util.cpp, README with what's new for 2.1.2/2.1.3 and the
   "Current mode" note, build.cmd, NOTES, PLAN): build/release/Goh4kMod-2.1.3.zip, test-gamefolder PASSED,
   installed (deploy -Release); main menu at the 1080p UI size, no goh4k.log (captures/outline/release-213-menu.png).
+- Uploaded to Nexus (Ethan's go, 2026-10-19 02:37): Goh4kMod-2.1.3.zip as an update of the main file
+  "Goh4kUIMod (Beta)", 2.1.1 archived, mod version set to 2.1.3, changelog = README's what's new. Description,
+  posts and the outline bug report left untouched. Nexus virus scan was still running at upload.
