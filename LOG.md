@@ -94,6 +94,8 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - 2026-11-08 01:35 to 02:00: 5 dev-build deploys (d3d11.dll, dxgi.dll) and one of the 2.1.3 release (01:39, the update
   check's put-back) for the popup work (2026-11-08 entry below). 02:04 deploy -Release: the 2.1.4 release
   (d3d11.dll 0255C871E7B5, dxgi.dll 29CDA7CE57F5), installed now.
+- 2026-11-08 02:12 deploy: d3d11.dll sha256 0255C871E7B5 (replaced our previous build)
+- 2026-11-08 02:12 deploy: dxgi.dll sha256 29CDA7CE57F5 (replaced our previous build)
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -757,6 +759,12 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - Version 2.1.4 (version.rc x2, package.ps1, util.cpp, README, build.cmd, NOTES, PLAN). build/release/Goh4kMod-2.1.4.zip,
   test-gamefolder PASSED, installed (deploy -Release). Release in game (no goh4k.log): main menu, LOAD CONQUEST >
   "Please wait", battle HUD (147 FPS), RETREAT > YES > "Saving progress" > Defeat by burst: no odd frames
-  (captures/nov08/rel).
-- Profile: see Gotchas (the game's own sync) and Cleanup (conquest 7.sav left; settings.set army put back).
+  (captures/nov08/rel). None of these is the popup-replaces-popup case itself (page > popup; "Saving progress" is a
+  dim overlay); the decision code is the same in both builds (not behind kLogging/diagnostics). Release, 4K
+  Fullscreen: alt-tab out (desktop shown) and back: UI at its 1080p size, OPTIONS opens from its button, backdrop
+  right (captures/nov08/alttab).
+- Profile at the end: options/settings/keys/game_progress.set byte-identical to the pre-test backup
+  (scratch/settings-backup/skirmish-dev-20261108-014148, the game's sync agreeing: `include settings.set` at exit);
+  only campaign\conquest 7.sav is new.
+- See Gotchas (the game's own sync) and Cleanup (conquest 7.sav left; settings.set army put back).
 - Not done: the MULTIPLAYER > skirmish path itself; Options' "Current mode 1920x1080" is unchanged (README explains it).
