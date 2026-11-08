@@ -62,6 +62,7 @@ struct UiCounters {
     std::atomic<long long> labelViewports{0};   // rule 1 applications
     std::atomic<long long> screenViewports{0};  // rule 2 applications
     std::atomic<long long> imageDraws{0};       // UI draws of a screen-sized image (rule 3 candidates)
+    std::atomic<long long> imageDrawsByCoords{0};  // ... decided by their texture coordinates (the rest: the count)
     std::atomic<long long> standInDraws{0};     // ... of them given the stand-in
     std::atomic<long long> standInsMade{0};
     std::atomic<int> uiShaders{0};              // UI vertex shaders recognised

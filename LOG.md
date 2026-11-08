@@ -2,8 +2,8 @@
 
 ## Status
 1.0 (M1-M5, 2026-10-02/04, commit e338dd9) replaced by 2.0 native scaling (2026-10-05, commit f08b58d).
-- Release 2.0 is INSTALLED, the same files as build\release\Goh4kMod-2.0.zip: d3d11.dll, dxgi.dll and
-  Uninstall Goh4kMod.bat in binaries\x64.
+- Release 2.1.4 is INSTALLED (2026-11-08), the same files as build\release\Goh4kMod-2.1.4.zip: d3d11.dll and
+  dxgi.dll in binaries\x64. Nexus still serves 2.1.3 until Ethan says to upload.
 - The game is set to 3840x2160 Fullscreen (Ethan's choice for 2.0); the UI keeps its 1080p size.
 - Run uninstall.cmd before playing multiplayer.
 - Maintainer notes are in NOTES.md; usage is in PLAN.md "How to use" and the zip's README.txt.
@@ -38,6 +38,13 @@
   1420,632 > first mission 1420,608 > Easy 1322,1525 (starts loading). Esc/space skip the intro; space
   continues at "press any button"; CONTINUE 3752,38 ends the cutscene. To quit: Esc > Exit 1916,1196 >
   Yes 1988,1136 > top bar EXIT 2400,22 > Yes 1988,1136.
+- Profile "restored byte-identical" but the game shows the test's changes on its next start -> the game syncs
+  game_progress/keys/settings.set and campaign saves with its own remote copy (goh.profile_v2; game.log
+  `SyncFile ... Local=<mtime UTC> Remote=...`, the newer wins: `overwrite` or `skip`; a clean exit uploads) ->
+  a test that exits cleanly persists; put a file back with its original content and a newer mtime, and the
+  game keeps it (`skip`). A deleted save comes back from the remote. Prefer tests that create nothing.
+- Popup over a small copy of the screen in the top-left corner, held while loading -> rule 3's draw count when
+  one popup replaces another in the same frame -> the draw's own coordinates decide (NOTES History 21).
 
 ## Game-folder changes
 Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later test builds were not kept.
@@ -84,6 +91,9 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - 2026-10-19 02:21 deploy: dxgi.dll sha256 4FFDEF415781 (replaced our previous build)
 - 2026-10-19 02:21 deploy: d3d11.dll sha256 D7B5BE3ADE1A (replaced our previous build)
 - 2026-10-19 02:21 deploy: dxgi.dll sha256 CD1DE4F10EA4 (replaced our previous build)
+- 2026-11-08 01:35 to 02:00: 5 dev-build deploys (d3d11.dll, dxgi.dll) and one of the 2.1.3 release (01:39, the update
+  check's put-back) for the popup work (2026-11-08 entry below). 02:04 deploy -Release: the 2.1.4 release
+  (d3d11.dll 0255C871E7B5, dxgi.dll 29CDA7CE57F5), installed now.
 
 ## Cleanup
 - Game profile (Documents\My Games\gates of hell\profiles\209810737): the M4 test created a new Conquest
@@ -99,6 +109,10 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   261005-2339 stay.
 - scratch\interface-pak holds interface.pak extracted read-only for the font research (gitignored, 2078
   files). Delete freely.
+- 2026-11-08 tests left campaign\conquest 7.sav in Ethan's profile and its remote copy (a test Conquest:
+  Germany vs USSR, Easy, day 2, two retreats). Delete freely (SINGLEPLAYER > CONQUEST > LOAD CONQUEST >
+  DELETE). The same tests set settings.set `{mp {army ger}}`; put back to Ethan's `usa` (content byte-identical
+  to scratch\settings-backup\skirmish-dev-20261108-014148, newer mtime so the game's sync keeps it).
 
 ## Journal (newest at the bottom)
 ### 2026-10-02 Planning + Phase 0
@@ -715,3 +729,34 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - Uploaded to Nexus (Ethan's go, 2026-10-19 02:37): Goh4kMod-2.1.3.zip as an update of the main file
   "Goh4kUIMod (Beta)", 2.1.1 archived, mod version set to 2.1.3, changelog = README's what's new. Description,
   posts and the outline bug report left untouched. Nexus virus scan was still running at upload.
+
+### 2026-11-08 2.1.4: a popup replacing a popup (Ethan: "on full screen it doesn't seem to work correctly anymore")
+- Checked first: call_to_arms.exe unchanged (2026-10-02, 1.067.0); System32 d3d11/dxgi/user32 from 2026-10-13; NVIDIA
+  driver 32.0.16.2101 installed 2026-10-28 (after the last PASS). Ethan's profile unchanged since 2026-10-15. Update
+  check with the 2.1.3 dev build, 4K Fullscreen: 16 of 16 PASS (captures/update-check/20261108-013505). His game.log
+  (release 2.1.3, 01:28): Options open 46 s on the main menu, then MULTIPLAYER > skirmish > LAN create > 1v1
+  Balzerweg vs AI, through status-dialog popups into loading. Nexus posts not read: WebFetch gets 403, the Chrome
+  extension wasn't connected.
+- Reproduced in single-player (Conquest; the MULTIPLAYER menu stays undriven, anti-cheat rule): Create Conquest >
+  CONTINUE showed "Please wait" over a half-size copy of the menu in the top-left quarter, black elsewhere, held ~10 s
+  while the game loaded (captures/nov08/04-after-continue.png); dev log `ui check frame 12949: image draw uv max 1,
+  stand-in 1: DISAGREES`. Cause: rule 3's per-image draw count (NOTES History 21).
+- Fix (context.cpp): rule 3 decides from the draw's own texture coordinates (UiImageDrawCoords), read from CPU copies
+  of the bound vertex and index buffers (UiShadow: one readback on first use, then the immediate context's
+  UpdateSubresource; a copy or discard re-reads; deferred writes or CPU/GPU-writable buffers: untrusted). Logical /
+  texture size -> stand-in, 0..1 -> image, anything else -> the count as before. Cost: one private-data lookup per
+  UpdateSubresource, 11.6 ns measured (~15 us a frame at 1300 calls in a battle).
+- proxytest: new case (first frame, next frame, a popup's first frame right after another's, two established draws in
+  a frame) PASSED; against the 2.1.3 release DLLs it fails exactly there (7680-wide stand-in on a first frame).
+- In game, fixed dev build: the same transition shows "Please wait" over the full blurred menu
+  (captures/nov08/fix/please-wait-before-after.png); operation map, CONFIRM, battle start, battle Esc menu > Options,
+  RETREAT > YES ("Saving progress" replaces the confirm), defeat screen, results, Exit prompt: bursts without odd
+  frames, 0 DISAGREES, session `9961 UI image draws (9961 decided by their coordinates)`. Battle mod vs live
+  `uiscale 0`: same passes and target sizes (captures/20261108-014628/014636-nov08-battle-*). Update check 16 of 16
+  PASS (captures/update-check/20261108-020033; 3642 of 3642 image draws by coordinates).
+- Version 2.1.4 (version.rc x2, package.ps1, util.cpp, README, build.cmd, NOTES, PLAN). build/release/Goh4kMod-2.1.4.zip,
+  test-gamefolder PASSED, installed (deploy -Release). Release in game (no goh4k.log): main menu, LOAD CONQUEST >
+  "Please wait", battle HUD (147 FPS), RETREAT > YES > "Saving progress" > Defeat by burst: no odd frames
+  (captures/nov08/rel).
+- Profile: see Gotchas (the game's own sync) and Cleanup (conquest 7.sav left; settings.set army put back).
+- Not done: the MULTIPLAYER > skirmish path itself; Options' "Current mode 1920x1080" is unchanged (README explains it).

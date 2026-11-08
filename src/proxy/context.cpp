@@ -35,6 +35,7 @@ void WrappedContext::ResetTrackedState() {
 //    those coordinates cover the whole image. The image itself is left alone: the game also draws it full
 //    screen in the frame a second popup opens (a 1.x/early-2.0 fix that shrank the image into its top-left
 //    showed that frame as a small copy of the screen in the top-left corner, captures/v2/burst-exitq/064).
+//    Which draws need the stand-in is read from their own texture coordinates (UiImageDrawCoords).
 // "Real screen" is the buffer size, not the window's: in windowed modes the two can differ. Other rects and
 // other targets are left alone; RSGet* return the game's own values. 114 traces of menus, missions,
 // Conquest and the tech tree never enabled scissoring, so partial scissors aren't converted. "fix nouivp on"
@@ -326,9 +327,11 @@ void WrappedDevice::ReleaseStandIns(ULONGLONG unusedForMs) {
 
 // The UI draws a backdrop with coordinates 0..1 in the first frame its element exists, and with logical /
 // texture size (0..0.5 at 4K) from then on (vertex data read back in the dev build, LOG.md). In stock native
-// both mean the whole image, so only the later ones need the stand-in. Per image, the draws of each frame are
-// counted: a draw beyond last frame's count is a new element and keeps the game's own image. Draws that resume
-// after a display change (the game skips UI frames during a resolution switch) continue the old count.
+// both mean the whole image, so only the later ones need the stand-in. The draw's coordinates decide when they
+// can be read (UiImageDrawCoords); otherwise the draws of each frame are counted per image: a draw beyond last
+// frame's count is a new element and keeps the game's own image. Draws that resume after a display change (the
+// game skips UI frames during a resolution switch) continue the old count. The count is wrong when one popup
+// replaces another in the same frame (the new one's first draw matches the old one's count).
 static const GUID kUiDrawCountGuid = {0x8c2d5f63, 0x1a7e, 0x4b93, {0xb4, 0x0c, 0x6e, 0x15, 0x92, 0xa8, 0x3d, 0x77}};
 
 struct UiDrawCount {
@@ -354,13 +357,171 @@ static bool UiEstablishedDraw(ID3D11Resource* img) {
     return established;
 }
 
+// A buffer's contents as the GPU has them after the commands so far, through a staging copy (the CPU waits for
+// the GPU). Rule 3 uses it once per buffer it follows; the dev self-check on every image draw.
+static bool ReadBack(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Buffer* b, std::vector<uint8_t>* out) {
+    D3D11_BUFFER_DESC bd;
+    b->GetDesc(&bd);
+    D3D11_BUFFER_DESC sd = {bd.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0};
+    ID3D11Buffer* st = nullptr;
+    if (FAILED(dev->CreateBuffer(&sd, nullptr, &st))) return false;
+    ctx->CopyResource(st, b);
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    bool ok = SUCCEEDED(ctx->Map(st, 0, D3D11_MAP_READ, 0, &m));
+    if (ok) out->assign((const uint8_t*)m.pData, (const uint8_t*)m.pData + bd.ByteWidth), ctx->Unmap(st, 0);
+    st->Release();
+    return ok;
+}
+
+// A CPU copy of a vertex or index buffer that rule-3 draws read, so their texture coordinates are known without a
+// GPU readback per draw. The game uploads its UI vertices with UpdateSubresource (the whole vertex buffer once a
+// frame) and draws each quad with DrawIndexed. A copy starts from one readback when a rule-3 draw first uses the
+// buffer and follows the immediate context's UpdateSubresource from then on; a copy into the buffer means another
+// readback when next needed. Anything it can't follow (a write from a deferred context, a CPU-writable or
+// GPU-writable buffer) makes it untrusted for good, and the draw count decides instead. Held by the buffer as
+// private data, so it goes with it.
+static const GUID kUiShadowGuid = {0x3f6e2a90, 0x7c14, 0x4d8b, {0xa5, 0x3e, 0x91, 0x0b, 0x6d, 0x2c, 0x58, 0xe7}};
+
+class UiShadow final : public IUnknown {
+public:
+    explicit UiShadow(UINT size) : bytes(size) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        *ppv = riid == __uuidof(IUnknown) ? this : nullptr;
+        if (!*ppv) return E_NOINTERFACE;
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++m_refs; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG r = --m_refs;
+        if (!r) delete this;
+        return r;
+    }
+    std::vector<uint8_t> bytes;          // the immediate context's thread only
+    bool current = false;                // bytes are the buffer's as of the immediate context's last command
+    std::atomic<bool> untrusted{false};  // written in a way the copy can't follow: never used again
+
+private:
+    std::atomic<ULONG> m_refs{1};
+};
+
+static UiShadow* ShadowOf(ID3D11Resource* r) {  // AddRef'd, or null
+    IUnknown* p = nullptr;
+    UINT size = sizeof(p);
+    if (!r || FAILED(r->GetPrivateData(kUiShadowGuid, &size, &p)) || size != sizeof(p)) return nullptr;
+    return static_cast<UiShadow*>(p);
+}
+
+// The game wrote into r: UpdateSubresource (src set; box and flags as passed) or a copy (src null).
+static void UiShadowWritten(ID3D11Resource* r, const D3D11_BOX* box, const void* src, UINT flags, bool immediate) {
+    UiShadow* sh = ShadowOf(r);
+    if (!sh) return;
+    UINT size = (UINT)sh->bytes.size(), lo = box ? box->left : 0, hi = box ? box->right : size;
+    if (!immediate) {
+        sh->untrusted = true;  // applied whenever its command list runs: can't be followed
+    } else if (!src) {
+        sh->current = false;
+    } else if (lo < hi && hi <= size && (sh->current || (lo == 0 && hi == size))) {
+        memcpy(sh->bytes.data() + lo, src, hi - lo);
+        sh->current = !((flags & D3D11_COPY_DISCARD) && (lo || hi < size));  // the rest is undefined then
+    } else if (lo < hi) {
+        sh->current = false;
+    }
+    sh->Release();
+}
+
+// Up to this many readbacks per session (each is a GPU wait); after that the draw count decides.
+static const int kMaxShadowReadbacks = 64;
+
+UiShadow* WrappedContext::UiShadowFor(ID3D11Buffer* b) {
+    UiShadow* sh = ShadowOf(b);
+    if (!sh) {
+        D3D11_BUFFER_DESC d;
+        b->GetDesc(&d);
+        sh = new UiShadow(d.ByteWidth);
+        bool followable = (d.Usage == D3D11_USAGE_DEFAULT || d.Usage == D3D11_USAGE_IMMUTABLE) && !d.CPUAccessFlags &&
+                          !d.MiscFlags && d.ByteWidth <= (16u << 20) &&
+                          !(d.BindFlags & ~(UINT)(D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER | D3D11_BIND_SHADER_RESOURCE));
+        sh->untrusted = !followable;
+        b->SetPrivateDataInterface(kUiShadowGuid, sh);  // the buffer's reference
+        if (!followable) Log("ui: a buffer the UI draws images from can't be followed (usage %d, cpu 0x%x, bind 0x%x, misc 0x%x)",
+                             (int)d.Usage, d.CPUAccessFlags, d.BindFlags, d.MiscFlags);
+    }
+    if (!sh->untrusted && !sh->current && m_shadowReadbacks < kMaxShadowReadbacks) {
+        ++m_shadowReadbacks;
+        sh->current = ReadBack(m_device->Real(), m_real, b, &sh->bytes);
+        if (m_shadowReadbacks == kMaxShadowReadbacks) Log("ui: %d buffer readbacks: the draw count decides from now on", kMaxShadowReadbacks);
+    }
+    if (sh->untrusted || !sh->current) {
+        sh->Release();
+        return nullptr;
+    }
+    return sh;
+}
+
+// Rule 3's choice from the draw's own texture coordinates (texcoord 0 at byte 28 of the UI's 36-byte vertices, as
+// the dev self-check reads them), over the whole image: logical / texture size (kCoordsLogical: the stand-in) or
+// 0..1 (kCoordsWhole: the game's image). kCoordsUnknown if they can't be read or fit neither, and the draw count
+// decides (no other kind of image draw has been seen).
+enum UiCoords { kCoordsUnknown = -1, kCoordsWhole = 0, kCoordsLogical = 1 };
+
+int WrappedContext::UiImageDrawCoords(UINT indexCount, UINT startIndex, INT baseVertex, const UiState& s) {
+    if (!m_immediate || !indexCount || !s.bw || !s.bh) return kCoordsUnknown;
+    ID3D11Buffer* vb = nullptr;
+    UINT stride = 0, off = 0;
+    m_real->IAGetVertexBuffers(0, 1, &vb, &stride, &off);
+    ID3D11Buffer* ib = nullptr;
+    DXGI_FORMAT ifmt = DXGI_FORMAT_UNKNOWN;
+    UINT ioff = 0;
+    m_real->IAGetIndexBuffer(&ib, &ifmt, &ioff);
+    UINT isz = ifmt == DXGI_FORMAT_R32_UINT ? 4 : ifmt == DXGI_FORMAT_R16_UINT ? 2 : 0;
+    UiShadow* vsh = vb && stride == 36 ? UiShadowFor(vb) : nullptr;
+    UiShadow* ish = ib && isz && vsh ? UiShadowFor(ib) : nullptr;
+    float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
+    bool read = vsh && ish;
+    for (UINT i = 0; read && i < indexCount && i < 600; ++i) {
+        size_t ip = ioff + ((size_t)startIndex + i) * isz;
+        if (ip + isz > ish->bytes.size()) {
+            read = false;
+            break;
+        }
+        uint32_t idx = 0;
+        memcpy(&idx, ish->bytes.data() + ip, isz);
+        int64_t vi = (int64_t)idx + baseVertex;
+        size_t vp = off + (size_t)vi * stride;
+        if (vi < 0 || vp + stride > vsh->bytes.size()) {
+            read = false;
+            break;
+        }
+        float uv[2];
+        memcpy(uv, vsh->bytes.data() + vp + 28, sizeof(uv));
+        u0 = std::min(u0, uv[0]), u1 = std::max(u1, uv[0]), v0 = std::min(v0, uv[1]), v1 = std::max(v1, uv[1]);
+    }
+    if (vsh) vsh->Release();
+    if (ish) ish->Release();
+    if (vb) vb->Release();
+    if (ib) ib->Release();
+    if (!read) return kCoordsUnknown;
+    auto at = [](float a, float b) { return std::fabs(a - b) < 0.01f; };  // NaN: false
+    if (at(u0, 0) && at(v0, 0)) {
+        if (at(u1, (float)s.lw / s.bw) && at(v1, (float)s.lh / s.bh)) return kCoordsLogical;
+        if (at(u1, 1) && at(v1, 1)) return kCoordsWhole;
+    }
+    static std::atomic<int> logged{0};
+    if (logged++ < 20)
+        Log("ui: an image draw with coordinates %g,%g-%g,%g (neither the whole image nor logical / texture size): the "
+            "draw count decides", u0, v0, u1, v1);
+    return kCoordsUnknown;
+}
+
 // Before each indexed draw: learn the UI's vertex shader (rule 1 draws), or, for an established UI draw onto a
 // screen-sized target that samples a screen-sized image, bind rule 3's stand-in at slot 0. True if UiAfterDraw
 // must put the game's texture back.
 //
 // Slot 0 is read from the context, not tracked from PSSetShaderResources: D3D11 unbinds a view by itself when
 // its texture is bound as a render target (the backdrop image is one), and the game may then free it.
-bool WrappedContext::UiBeforeDraw() {
+bool WrappedContext::UiBeforeDraw(UINT indexCount, UINT startIndex, INT baseVertex) {
     if (!m_vs || (m_uiTarget != kUiBelow && m_uiTarget != kUiScreen)) return false;
     if (!m_vsHashKnown) m_vsHash = ShaderHash(m_vs), m_vsHashKnown = true;
     if (m_uiTarget == kUiBelow) {
@@ -383,8 +544,11 @@ bool WrappedContext::UiBeforeDraw() {
     }
     m_uiImageDraw = true;
     Count(Counters().imageDraws);
+    bool established = UiEstablishedDraw(img);  // counted on every draw, so the fallback stays current
+    int coords = UiImageDrawCoords(indexCount, startIndex, baseVertex, s);
+    if (coords != kCoordsUnknown) established = coords == kCoordsLogical, Count(Counters().imageDrawsByCoords);
     ID3D11ShaderResourceView* standIn =
-        UiEstablishedDraw(img) ? m_device->UiStandIn(m_real, v, static_cast<ID3D11Texture2D*>(img), s) : nullptr;
+        established ? m_device->UiStandIn(m_real, v, static_cast<ID3D11Texture2D*>(img), s) : nullptr;
     img->Release();
     if (!standIn) {
         v->Release();
@@ -511,22 +675,10 @@ void WrappedContext::UiCheckImageDraw(UINT indexCount, UINT startIndex, INT base
     DXGI_FORMAT ifmt = DXGI_FORMAT_UNKNOWN;
     UINT ioff = 0;
     m_real->IAGetIndexBuffer(&ib, &ifmt, &ioff);
-    auto readBack = [&](ID3D11Buffer* b, std::vector<uint8_t>* out) {
-        D3D11_BUFFER_DESC bd;
-        b->GetDesc(&bd);
-        D3D11_BUFFER_DESC sd = {bd.ByteWidth, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ, 0, 0};
-        ID3D11Buffer* st = nullptr;
-        if (FAILED(m_device->Real()->CreateBuffer(&sd, nullptr, &st))) return false;
-        m_real->CopyResource(st, b);
-        D3D11_MAPPED_SUBRESOURCE m = {};
-        bool ok = SUCCEEDED(m_real->Map(st, 0, D3D11_MAP_READ, 0, &m));
-        if (ok) out->assign((const uint8_t*)m.pData, (const uint8_t*)m.pData + bd.ByteWidth), m_real->Unmap(st, 0);
-        st->Release();
-        return ok;
-    };
     std::vector<uint8_t> ibd, vbd;
     float uvMax = -1;
-    if (vb && ib && stride >= 36 && readBack(ib, &ibd) && readBack(vb, &vbd)) {
+    if (vb && ib && stride >= 36 && ReadBack(m_device->Real(), m_real, ib, &ibd) &&
+        ReadBack(m_device->Real(), m_real, vb, &vbd)) {
         UINT isz = ifmt == DXGI_FORMAT_R32_UINT ? 4 : 2;
         for (UINT i = 0; i < indexCount && i < 6; ++i) {
             size_t ip = ioff + (size_t)(startIndex + i) * isz;
@@ -552,7 +704,7 @@ void WrappedContext::UiCheckImageDraw(UINT indexCount, UINT startIndex, INT base
 
 void STDMETHODCALLTYPE WrappedContext::DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) {
     m_uiImageDraw = false;
-    bool standIn = UiScaleConfigured() && UiBeforeDraw();
+    bool standIn = UiScaleConfigured() && UiBeforeDraw(IndexCount, StartIndexLocation, BaseVertexLocation);
     if (m_uiImageDraw && g_cfg.diagnostics) UiCheckImageDraw(IndexCount, StartIndexLocation, BaseVertexLocation, standIn);
     TRACE_ACTION(TraceKind::Draw, "DrawIndexed(%u,%u,%d)", IndexCount, StartIndexLocation, BaseVertexLocation);
     m_real->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
@@ -619,6 +771,7 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion(ID3D11Resource* pDs
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
     UiSceneUpdated(pDstResource, nullptr, nullptr, false);  // a copy into the UI's constants: projection unknown
+    UiShadowWritten(pDstResource, nullptr, nullptr, 0, m_immediate);  // or into a buffer rule 3 follows
     m_real->CopySubresourceRegion(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
     TRACE_AFTER();
 }
@@ -630,6 +783,7 @@ void STDMETHODCALLTYPE WrappedContext::CopySubresourceRegion1(ID3D11Resource* pD
     TRACE_ACTION(TraceKind::Plain, "CopySubresourceRegion1 dst=%s/%u at %u,%u src=%s/%u %s", ResTag(pDstResource).c_str(),
                  DstSubresource, DstX, DstY, ResTag(pSrcResource).c_str(), SrcSubresource, BoxStr(pSrcBox).c_str());
     UiSceneUpdated(pDstResource, nullptr, nullptr, false);
+    UiShadowWritten(pDstResource, nullptr, nullptr, 0, m_immediate);
     m_real->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource,
                                    pSrcBox, CopyFlags);
     TRACE_AFTER();
@@ -639,8 +793,14 @@ void STDMETHODCALLTYPE WrappedContext::CopyResource(ID3D11Resource* pDstResource
     TRACE_ACTION(TraceKind::Plain, "CopyResource dst=%s src=%s", ResTag(pDstResource).c_str(),
                  ResTag(pSrcResource).c_str());
     UiSceneUpdated(pDstResource, nullptr, nullptr, false);
+    UiShadowWritten(pDstResource, nullptr, nullptr, 0, m_immediate);
     m_real->CopyResource(pDstResource, pSrcResource);
     TRACE_AFTER();
+}
+
+void STDMETHODCALLTYPE WrappedContext::DiscardResource(ID3D11Resource* pResource) {
+    UiShadowWritten(pResource, nullptr, nullptr, 0, m_immediate);  // its contents are undefined from here
+    m_real->DiscardResource(pResource);
 }
 
 void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstResource, UINT DstSubresource,
@@ -649,6 +809,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource(ID3D11Resource* pDstRes
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     UiSceneUpdated(pDstResource, pDstBox, pSrcData, m_immediate);
+    UiShadowWritten(pDstResource, pDstBox, pSrcData, 0, m_immediate);
     m_real->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
     TRACE_AFTER();
 }
@@ -659,6 +820,7 @@ void STDMETHODCALLTYPE WrappedContext::UpdateSubresource1(ID3D11Resource* pDstRe
     TRACE_ACTION(TraceKind::Plain, "UpdateSubresource1 dst=%s/%u %s", ResTag(pDstResource).c_str(), DstSubresource,
                  BoxStr(pDstBox).c_str());
     UiSceneUpdated(pDstResource, pDstBox, pSrcData, m_immediate);
+    UiShadowWritten(pDstResource, pDstBox, pSrcData, CopyFlags, m_immediate);
     m_real->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
     TRACE_AFTER();
 }

@@ -39,8 +39,8 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
       backdrop element uses texture coordinates 0..1 in its first frame and logical / texture size (0..0.5
       at 4K) afterwards; at native 1080p both mean the whole image, with the mod the later ones show only
       its top-left quarter, magnified. Fix: those later draws (recognised by the UI's vertex shader, learnt
-      from rule 1's draws and matched by bytecode id, and by a per-image count of draws per frame) get a
-      stand-in texture k times the image's size with the image copied 1:1 into its top-left. The image
+      from rule 1's draws and matched by bytecode id, and by their own texture coordinates, History 21) get
+      a stand-in texture k times the image's size with the image copied 1:1 into its top-left. The image
       itself is never changed: an earlier fix that shrank it into its top-left showed it small in the
       top-left corner on a second popup's first frame. The dev build reads back each such draw's
       coordinates and logs `ui check ... DISAGREES` when the choice was wrong.
@@ -149,6 +149,18 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 20. **"Selection outlines at 1080p size and offset"** (Nexus bug, 2026-10-16, 2.1.1, 4K TV): not reproduced at
     4K Fullscreen 8x MSAA (LOG 2026-10-19). The lens-effects outline pass (shader.pak lenseffects_v2, a mask read
     with Texture2DMS.Load at screen pixels) never ran in normal play; selection circles and tooltips match stock.
+21. **Popup replaced by a popup** (2.1.4, found 2026-11-08 replaying Ethan's "fullscreen doesn't work correctly
+    anymore" session). Rule 3 chose the stand-in by a per-image count of draws per frame (a draw beyond last
+    frame's count = a new element, 0..1). When one popup replaces another in the same frame (Create Conquest >
+    CONTINUE > "Please wait"), the new one's first draw matches the old one's count, got the stand-in with 0..1
+    coordinates, and the screen showed as a small copy in the top-left quarter with black around it; the game
+    then blocks while loading, so that frame stayed up about 10 s. Fix (context.cpp UiImageDrawCoords): the
+    decision reads the draw's own texture coordinates from CPU copies of the bound vertex and index buffers
+    (UiShadow: one readback when a rule-3 draw first uses a buffer, then every immediate-context
+    UpdateSubresource; the game uploads its whole UI vertex buffer that way once a frame): logical / texture
+    size gets the stand-in, 0..1 the image; anything else (unreadable, untrusted, other values) falls back to
+    the count. The count stays updated on every draw. Session summary: `N UI image draws (M decided by their
+    coordinates)`; a Conquest session had 9961 of 9961, 0 DISAGREES.
 
 ## What the mod relies on in the game (check these after an update)
 
@@ -162,6 +174,7 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 | draws UI text into label surfaces with the real-screen viewport (rule 1) | text 2x and cut off, or the rule unused | nothing automatic | text crops; session summary warning |
 | sets the logical viewport on screen-sized targets only by mistake (rule 2; stock 4K never sets 1920x1080 on 3840x2160) | a new half-res pass in the top-left of a full target would be stretched | nothing automatic | preset-sweep traces: a new rule-2 pixel shader |
 | draws popup backdrops with 0..1 in an element's first frame and logical / texture size after (rule 3) | wrong backdrop for some frames | dev build logs `ui check ... DISAGREES` | update check burst + dev log |
+| uploads its UI vertices (36 bytes, texcoord 0 at byte 28) with UpdateSubresource into a DEFAULT buffer and draws quads with DrawIndexed (rule 3's decision, History 21) | the draw count decides again (the 2.1.3 behaviour: a popup replacing a popup can show the screen small in the top-left) | falls back by itself | session summary: fewer image draws `decided by their coordinates`; `can't be followed` / `neither the whole image` lines |
 | draws all UI with one vertex shader, learnt from rule-1 draws | rule 3 never fires: backdrops magnified | — | no `recognised as the UI's` line; summary shows 0 UI shaders |
 | makes its cursors with CreateIconIndirect | cursor stays 32 px | — | `drive cursor` |
 | saves screenshots through one CPU-readable texture at its client size, the GPU copy made from its desc (rule 4) | screenshots at 1920x1080 again, or a wrong picture | nothing automatic | `screenshot: readback texture` log line; `drive key prtsc` + the JPEG's size |
@@ -196,7 +209,7 @@ top says whether this is the build the mod version was verified with
   `scratch/logs/`; diagnostics in `captures/`).
 - `build.cmd release`: release DLLs (`/DGOH4K_RELEASE`: settings next to the DLL, no log (Ethan, 2.1: the
   log-only work is compiled out too, `kLogging`), diagnostics off, no local paths embedded), packaged as
-  `build/release/Goh4kMod-2.1.3.zip`. `package.ps1`
+  `build/release/Goh4kMod-2.1.4.zip`. `package.ps1`
   refuses to package a DLL that contains the user name or project path.
 - Tests (run with the game closed):
   - `build\proxytest.exe`: wrapper smoke test, diagnostics round trip, ratio math, and native-scaling

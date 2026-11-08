@@ -17,6 +17,7 @@
 namespace goh4k {
 
 class WrappedDevice;
+class UiShadow;
 struct UiState;
 
 // Rule 4 (context.cpp, screenshots): true if d is the game's screenshot readback texture made at the logical
@@ -53,6 +54,7 @@ public:
                                                   UINT DstZ, ID3D11Resource* pSrcResource, UINT SrcSubresource,
                                                   const D3D11_BOX* pSrcBox, UINT CopyFlags) override;
     void STDMETHODCALLTYPE CopyResource(ID3D11Resource* pDstResource, ID3D11Resource* pSrcResource) override;
+    void STDMETHODCALLTYPE DiscardResource(ID3D11Resource* pResource) override;
     void STDMETHODCALLTYPE UpdateSubresource(ID3D11Resource* pDstResource, UINT DstSubresource, const D3D11_BOX* pDstBox,
                                              const void* pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch) override;
     void STDMETHODCALLTYPE UpdateSubresource1(ID3D11Resource* pDstResource, UINT DstSubresource, const D3D11_BOX* pDstBox,
@@ -108,8 +110,10 @@ private:
     void UiTargetsChanged(ID3D11RenderTargetView* const* rtvs, UINT numRtvs, ID3D11DepthStencilView* dsv);
     void UiApplyViewports();
     void UiApplyScissors();
-    bool UiBeforeDraw();
+    bool UiBeforeDraw(UINT indexCount, UINT startIndex, INT baseVertex);
     void UiAfterDraw();
+    int UiImageDrawCoords(UINT indexCount, UINT startIndex, INT baseVertex, const UiState& s);
+    UiShadow* UiShadowFor(ID3D11Buffer* b);
     void UiCheckImageDraw(UINT indexCount, UINT startIndex, INT baseVertex, bool standIn);
     void UiFollowProjection();
 
@@ -130,6 +134,7 @@ private:
     bool m_vsHashKnown = false;
     ID3D11ShaderResourceView* m_uiSavedPs0 = nullptr;  // the game's slot-0 view while rule 3's stand-in is bound
     bool m_uiImageDraw = false;  // the current draw is a UI draw of a screen-sized image (stand-in or not)
+    int m_shadowReadbacks = 0;   // buffer readbacks rule 3 made (context.cpp UiShadowFor)
 };
 
 class WrappedDevice final : public Fwd_ID3D11Device5 {

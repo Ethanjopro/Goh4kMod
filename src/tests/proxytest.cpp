@@ -200,6 +200,110 @@ static void CheckStaleSlot0(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGISw
         if (p) p->Release();
 }
 
+// Rule 3 decides from the draw's own texture coordinates: 0..1 keeps the game's image, logical / texture size gets
+// the stand-in, whatever the per-frame draw count says. The count alone gave the stand-in to the first frame of a
+// popup that replaced another in the same frame, which showed the screen small in the top-left corner (2.1.4). The
+// UI's vertices are 36 bytes with texcoord 0 at byte 28 and come through UpdateSubresource, as in the game. The
+// pixel shader writes the width of the texture it was given.
+static void CheckImageCoords(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGISwapChain* sc, UINT w, UINT h, long lw,
+                             long lh) {
+    ID3DBlob* vsb = Compile("struct V { float3 p : POSITION; float4 c : COLOR; float2 t : TEXCOORD0; };"
+                            " float4 main(V v, out float2 t : TEXCOORD0) : SV_Position { t = v.t; return float4(v.p, 1); }",
+                            "vs_4_0");
+    ID3DBlob* psb = Compile("Texture2D t : register(t0);"
+                            " float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target {"
+                            " uint w, h; t.GetDimensions(w, h); return float4(w, h, uv.x, 1); }",
+                            "ps_4_0");
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader* ps = nullptr;
+    ID3D11InputLayout* il = nullptr;
+    const D3D11_INPUT_ELEMENT_DESC layout[] = {{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                                               {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                                               {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0}};
+    if (vsb) {
+        dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &vs);
+        dev->CreateInputLayout(layout, 3, vsb->GetBufferPointer(), vsb->GetBufferSize(), &il);
+        vsb->Release();
+    }
+    if (psb) dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &ps), psb->Release();
+    auto make = [&](UINT tw, UINT th, DXGI_FORMAT f, UINT bind, D3D11_USAGE usage, ID3D11Texture2D** t) {
+        D3D11_TEXTURE2D_DESC td = {tw, th, 1, 1, f, {1, 0}, usage, bind, usage == D3D11_USAGE_STAGING ? D3D11_CPU_ACCESS_READ : 0u, 0};
+        *t = nullptr;
+        dev->CreateTexture2D(&td, nullptr, t);
+    };
+    ID3D11Texture2D *label, *screen, *img, *readback;
+    make(256, 256, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_RENDER_TARGET, D3D11_USAGE_DEFAULT, &label);
+    make(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, D3D11_BIND_RENDER_TARGET, D3D11_USAGE_DEFAULT, &screen);
+    make(w, h, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, &img);
+    make(1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_USAGE_STAGING, &readback);
+    ID3D11RenderTargetView *labelRtv = nullptr, *screenRtv = nullptr;
+    ID3D11ShaderResourceView* imgSrv = nullptr;
+    if (label) dev->CreateRenderTargetView(label, nullptr, &labelRtv);
+    if (screen) dev->CreateRenderTargetView(screen, nullptr, &screenRtv);
+    if (img) dev->CreateShaderResourceView(img, nullptr, &imgSrv);
+    const UINT16 idx[6] = {0, 1, 2, 2, 1, 3};
+    D3D11_BUFFER_DESC ibd = {sizeof(idx), D3D11_USAGE_DEFAULT, D3D11_BIND_INDEX_BUFFER, 0, 0, 0};
+    D3D11_SUBRESOURCE_DATA init = {idx, 0, 0};
+    ID3D11Buffer *ib = nullptr, *vb = nullptr;
+    dev->CreateBuffer(&ibd, &init, &ib);
+    D3D11_BUFFER_DESC vbd = {4 * 36, D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0};
+    dev->CreateBuffer(&vbd, nullptr, &vb);
+    if (!vs || !ps || !il || !labelRtv || !screenRtv || !imgSrv || !readback || !ib || !vb) {
+        printf("note  shaders or targets for the coordinates check unavailable (d3dcompiler_47?): skipped\n");
+    } else {
+        float eu = (float)lw / w, ev = (float)lh / h;
+        // The game's upload: the whole vertex buffer, then the draw. Returns the width of the texture it sampled.
+        auto drawImage = [&](float u, float v) {
+            float q[4][9] = {{-1, 1, 0, 1, 1, 1, 1, 0, 0}, {1, 1, 0, 1, 1, 1, 1, u, 0}, {-1, -1, 0, 1, 1, 1, 1, 0, v},
+                             {1, -1, 0, 1, 1, 1, 1, u, v}};
+            ctx->UpdateSubresource(vb, 0, nullptr, q, 0, 0);
+            D3D11_VIEWPORT full = {0, 0, (float)w, (float)h, 0, 1};
+            ctx->OMSetRenderTargets(1, &screenRtv, nullptr);
+            ctx->RSSetViewports(1, &full);
+            ctx->PSSetShaderResources(0, 1, &imgSrv);
+            ctx->DrawIndexed(6, 0, 0);
+            D3D11_BOX px = {0, 0, 0, 1, 1, 1};
+            ctx->CopySubresourceRegion(readback, 0, 0, 0, 0, screen, 0, &px);
+            D3D11_MAPPED_SUBRESOURCE m = {};
+            float got = 0;
+            if (SUCCEEDED(ctx->Map(readback, 0, D3D11_MAP_READ, 0, &m))) got = ((const float*)m.pData)[0], ctx->Unmap(readback, 0);
+            return (UINT)got;
+        };
+        UINT standIn = (UINT)goh4k::RatioUp((long)w, goh4k::Ratio{(int64_t)w, (int64_t)lw});
+        UINT stride = 36, off = 0;
+        ctx->IASetInputLayout(il);
+        ctx->IASetVertexBuffers(0, 1, &vb, &stride, &off);
+        ctx->IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vs, nullptr, 0);
+        ctx->PSSetShader(ps, nullptr, 0);
+        // The UI's shader is learnt from a label-surface draw with the real-screen viewport (rule 1).
+        D3D11_VIEWPORT full = {0, 0, (float)w, (float)h, 0, 1};
+        ctx->OMSetRenderTargets(1, &labelRtv, nullptr);
+        ctx->RSSetViewports(1, &full);
+        ctx->DrawIndexed(6, 0, 0);
+        sc->Present(0, 0);
+        UINT a = drawImage(1, 1);  // a popup's first frame
+        sc->Present(0, 0);
+        UINT b = drawImage(eu, ev);  // its next frame
+        sc->Present(0, 0);
+        UINT c = drawImage(1, 1);  // another popup's first frame, in place of the first popup
+        sc->Present(0, 0);
+        UINT d1 = drawImage(eu, ev), d2 = drawImage(eu, ev);  // two established popups (the count: one new)
+        sc->Present(0, 0);
+        CHECK(a == w && b == standIn, "coordinates: 0..1 draws the image (%u), %g..%g the %u stand-in (%u)", a, eu, ev,
+              standIn, b);
+        CHECK(c == w, "coordinates: a popup's first frame right after another popup's draws the image (%u, the stand-in "
+              "would be %u)", c, standIn);
+        CHECK(d1 == standIn && d2 == standIn, "coordinates: a second established draw in a frame gets the stand-in too (%u, %u)",
+              d1, d2);
+    }
+    ctx->ClearState();
+    IUnknown* const all[] = {vs, ps, il, ib, vb, labelRtv, screenRtv, imgSrv, label, screen, img, readback};
+    for (IUnknown* p : all)
+        if (p) p->Release();
+}
+
 // Child process (--hookfail, with GOH4K_TEST_FAILHOOK set by the parent): one hook can't be made, so the mod
 // must stay fully off: a monitor-covering window keeps its real client size, and moving it (WM_MOVE) is safe.
 static int HookFailChild(const wchar_t* dir) {
@@ -581,6 +685,7 @@ int main(int argc, char** argv) {
 
     if (scaled) {
         CheckStaleSlot0(dev, ctx, sc, (UINT)realW, (UINT)realH);
+        CheckImageCoords(dev, ctx, sc, (UINT)realW, (UINT)realH, lw, lh);
         // Buffer-size guard: buffers asked at the logical size while the window covers the monitor stay real.
         {
             hr = sc->ResizeBuffers(0, (UINT)lw, (UINT)lh, DXGI_FORMAT_UNKNOWN, 0);

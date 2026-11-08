@@ -130,10 +130,10 @@ void LogUiSessionSummary() {
     UiCounters& c = Counters();
     if (!UiScaleConfigured() && !c.framesScaled) return;  // off all session
     long long f = c.framesScaled;
-    Log("session: %lld frames scaled; rule 1 %lld, rule 2 %lld; %lld UI image draws, %lld with the stand-in (%lld "
-        "made); %d UI vertex shader(s) recognised",
+    Log("session: %lld frames scaled; rule 1 %lld, rule 2 %lld; %lld UI image draws (%lld decided by their "
+        "coordinates), %lld with the stand-in (%lld made); %d UI vertex shader(s) recognised",
         f, (long long)c.labelViewports, (long long)c.screenViewports, (long long)c.imageDraws,
-        (long long)c.standInDraws, (long long)c.standInsMade, (int)c.uiShaders);
+        (long long)c.imageDrawsByCoords, (long long)c.standInDraws, (long long)c.standInsMade, (int)c.uiShaders);
     if (f > 20000 && !c.labelViewports)
         Log("WARNING: rule 1 (UI text surfaces) never applied in %lld scaled frames. If text looked too large or "
             "cut off, the game has probably changed how it draws text (NOTES.md, playbook).",
