@@ -241,8 +241,12 @@ private:
     void LogState(const char* why);
     void UpdateUiScale(const char* why);
     void ResyncAfterModeChange();
+    void CheckDisplayMode();  // dev self-check: fullscreen display mode vs the size the game asked for
 
     WrappedDevice* m_device;
+    UINT m_askW = 0, m_askH = 0;  // the display size the game last asked for (creation or ResizeTarget)
+    const char* m_askBy = "";
+    int m_modeOdd = 0;  // CheckDisplayMode checks in a row that disagreed
     HWND m_hwnd = nullptr;  // its output window
     bool m_followed = false;  // the mod followed m_hwnd as the game window at the last Present
     int m_level = 0;  // highest IDXGISwapChainN the real object supports

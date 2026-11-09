@@ -392,7 +392,25 @@ static void ForgetGameWindow(HWND h) {
                     true);
 }
 
+// Dev log of the window events around a mode change (Ethan, 2026-11-09: a launch came up with the monitor at 1080p
+// while the game's Resolution said 4K). Capped, in case something resizes the window in a loop.
+static void LogWindowMessage(UINT m, WPARAM w, LPARAM l) {
+    static std::atomic<int> lines{0};
+    std::string text;
+    if (m == WM_DISPLAYCHANGE) text = Fmt("WM_DISPLAYCHANGE %ux%u %u bpp", LOWORD(l), HIWORD(l), (UINT)w);
+    else if (m == WM_ACTIVATEAPP) text = Fmt("WM_ACTIVATEAPP %s", w ? "active" : "inactive");
+    else if (m == WM_SIZE) text = Fmt("WM_SIZE type %u, real %ux%u", (UINT)w, LOWORD(l), HIWORD(l));
+    else if (m == WM_WINDOWPOSCHANGED && l) {
+        auto* p = (const WINDOWPOS*)l;
+        if (p->flags & SWP_NOSIZE && !(p->flags & SWP_FRAMECHANGED)) return;
+        text = Fmt("WM_WINDOWPOSCHANGED (%d,%d) %dx%d flags 0x%x", p->x, p->y, p->cx, p->cy, p->flags);
+    } else return;
+    int n = ++lines;
+    if (n <= 300) Log("input: %s%s", text.c_str(), n == 300 ? " (no more window-event lines)" : "");
+}
+
 static LRESULT CALLBACK SubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (kLogging) LogWindowMessage(m, w, l);
     if (g_resyncMsg && m == g_resyncMsg) {
         g_resyncPostedAt = 0;
         RECT r = {};

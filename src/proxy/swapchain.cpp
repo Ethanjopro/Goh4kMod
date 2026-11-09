@@ -5,8 +5,17 @@
 #include "diag.h"
 #include "input.h"
 #include "scale.h"
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
 
 namespace goh4k {
+
+// Dev log: who made a mode call (module + offset), so a bad launch's calls can be matched to a good one's.
+static std::string Caller(const void* ra) {
+    if (!kLogging) return std::string();
+    HMODULE m = ModuleOf(ra);
+    return Fmt("%s+0x%llx", ModuleNameOf(ra).c_str(), (unsigned long long)((const char*)ra - (const char*)m));
+}
 
 static const IID* const kSwapChainIds[] = {&__uuidof(IDXGISwapChain1), &__uuidof(IDXGISwapChain2),
                                            &__uuidof(IDXGISwapChain3), &__uuidof(IDXGISwapChain4)};
@@ -27,6 +36,7 @@ WrappedSwapChain::WrappedSwapChain(IDXGISwapChain* real, WrappedDevice* device) 
     DXGI_SWAP_CHAIN_DESC d = {};
     m_real->GetDesc(&d);
     m_hwnd = d.OutputWindow;
+    m_askW = d.BufferDesc.Width, m_askH = d.BufferDesc.Height, m_askBy = "its creation";
     if (UiScaleConfigured()) {
         SubclassGameWindow(m_hwnd);
         UpdateUiScale("new swapchain");
@@ -154,6 +164,29 @@ static void CheckBufferSize() {
     }
 }
 
+// Dev self-check (Ethan, 2026-11-09: a fresh 4K Fullscreen launch of the release came up with the monitor in
+// 1920x1080 while the game's Resolution said 3840x2160; Options 4K -> 2K -> 4K put it right). The game can only
+// change the display mode through DXGI: ResizeTarget, or SetFullscreenState, which picks the mode from the
+// buffers. Fullscreen on a monitor whose mode isn't the size the game last asked for (swapchain creation or
+// ResizeTarget), at two checks in a row: WARNING, once per occurrence.
+void WrappedSwapChain::CheckDisplayMode() {
+    BOOL fs = FALSE;
+    MONITORINFO mi = {sizeof(mi)};
+    if (FAILED(m_real->GetFullscreenState(&fs, nullptr)) || !fs || !m_askW || !m_askH ||
+        !GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+        m_modeOdd = 0;
+        return;
+    }
+    UINT mw = (UINT)(mi.rcMonitor.right - mi.rcMonitor.left), mh = (UINT)(mi.rcMonitor.bottom - mi.rcMonitor.top);
+    m_modeOdd = (mw != m_askW || mh != m_askH) ? m_modeOdd + 1 : 0;
+    if (m_modeOdd == 2) {
+        DXGI_SWAP_CHAIN_DESC d = {};
+        m_real->GetDesc(&d);
+        Log("WARNING: fullscreen with the monitor at %ux%u while the game last asked for %ux%u (%s); buffers %ux%u",
+            mw, mh, m_askW, m_askH, m_askBy, d.BufferDesc.Width, d.BufferDesc.Height);
+    }
+}
+
 void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
     if (flags & DXGI_PRESENT_TEST) return;
     ++m_frames;
@@ -180,6 +213,7 @@ void WrappedSwapChain::AfterPresent(HRESULT hr, UINT flags) {
             if (m_device) m_device->ReleaseStandIns(WrappedDevice::kStandInIdleMs);
             if (first && kLogging) LogHealth();
             if (kLogging) CheckBufferSize();
+            if (kLogging) CheckDisplayMode();
         }
     }
     if (g_cfg.diagnostics && now - m_statusTick >= (ULONGLONG)g_cfg.statusMs) WriteStatus(now);
@@ -218,7 +252,7 @@ void WrappedSwapChain::LogState(const char* why) {
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::SetFullscreenState(BOOL Fullscreen, IDXGIOutput* pTarget) {
-    Log("SetFullscreenState(%d, output=%p)", Fullscreen, pTarget);
+    Log("SetFullscreenState(%d, output=%p) from %s", Fullscreen, pTarget, Caller(_ReturnAddress()).c_str());
     HRESULT hr = m_real->SetFullscreenState(Fullscreen, pTarget);
     Log("  -> 0x%08lx", hr);
     if (SUCCEEDED(hr)) ResyncAfterModeChange();
@@ -228,8 +262,8 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::SetFullscreenState(BOOL Fullscreen, 
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
                                                           DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
-    Log("ResizeBuffers(count=%u, %ux%u, fmt=%d, flags=0x%x)", BufferCount, Width, Height, (int)NewFormat,
-        SwapChainFlags);
+    Log("ResizeBuffers(count=%u, %ux%u, fmt=%d, flags=0x%x) from %s", BufferCount, Width, Height, (int)NewFormat,
+        SwapChainFlags, Caller(_ReturnAddress()).c_str());
     RealBufferSize(m_hwnd, &Width, &Height, "ResizeBuffers");
     HRESULT hr = m_real->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
     Log("  -> 0x%08lx", hr);
@@ -254,13 +288,16 @@ HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeBuffers1(UINT BufferCount, UIN
 }
 
 HRESULT STDMETHODCALLTYPE WrappedSwapChain::ResizeTarget(const DXGI_MODE_DESC* p) {
+    std::string from = Caller(_ReturnAddress());
     if (p)
-        Log("ResizeTarget(%ux%u fmt=%d refresh=%u/%u scanline=%d scaling=%d)", p->Width, p->Height, (int)p->Format,
-            p->RefreshRate.Numerator, p->RefreshRate.Denominator, (int)p->ScanlineOrdering, (int)p->Scaling);
+        Log("ResizeTarget(%ux%u fmt=%d refresh=%u/%u scanline=%d scaling=%d) from %s", p->Width, p->Height,
+            (int)p->Format, p->RefreshRate.Numerator, p->RefreshRate.Denominator, (int)p->ScanlineOrdering,
+            (int)p->Scaling, from.c_str());
     else
-        Log("ResizeTarget(null)");
+        Log("ResizeTarget(null) from %s", from.c_str());
     HRESULT hr = m_real->ResizeTarget(p);
     Log("  -> 0x%08lx", hr);
+    if (SUCCEEDED(hr) && p && p->Width && p->Height) m_askW = p->Width, m_askH = p->Height, m_askBy = "ResizeTarget";
     if (SUCCEEDED(hr)) ResyncAfterModeChange();
     LogState("after ResizeTarget");
     return hr;

@@ -6,9 +6,12 @@
   dxgi.dll in binaries\x64. Nexus still serves 2.1.3 until Ethan says to upload.
 - The game is set to 3840x2160 Fullscreen (Ethan's choice for 2.0); the UI keeps its 1080p size.
 - Run uninstall.cmd before playing multiplayer.
+- OPEN (2026-11-09): some fresh 4K Fullscreen launches come up with the monitor in 1080p (journal, last entry).
 - Maintainer notes are in NOTES.md; usage is in PLAN.md "How to use" and the zip's README.txt.
 
 ## Gotchas (symptom -> cause -> fix)
+- `cmd /c build.cmd` from the Bash or PowerShell tool says "'build.cmd' is not recognized" (cmd doesn't start in
+  the project folder there; no AutoRun is set) -> call it by full path: `cmd //c 'C:\...\Goh4kMod\build.cmd'`.
 - vcvars64.bat prints "'vswhere.exe' is not recognized" -> it calls vswhere by name internally -> harmless;
   build.cmd sends vcvars' stderr to nul and still checks its exit code.
 - Git Bash `sed -i 's/$/\r/'` silently leaves LF endings -> Git Bash sed strips CR -> write .cmd files with
@@ -768,3 +771,29 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   only campaign\conquest 7.sav is new.
 - See Gotchas (the game's own sync) and Cleanup (conquest 7.sav left; settings.set army put back).
 - Not done: the MULTIPLAYER > skirmish path itself; Options' "Current mode 1920x1080" is unchanged (README explains it).
+
+### 2026-11-09 Ethan: a fresh 4K Fullscreen launch came up in 1080p (no game this run, Ethan's call)
+- Report (release 2.1.4): the monitor itself was in 1920x1080, UI its normal size, from the first menu; Options
+  Resolution 4K -> 2K -> 4K fixed it; it has happened before. Steam's gameprocess_log: one launch since 11-08
+  (00:02:37-00:07:17). options.set Fullscreen 3840x2160 before and after (identical to scratch/settings-backup/
+  skirmish-dev-20261108-014148), so not History 18. game.log: main menu 3 min, then a LAN skirmish (Options isn't
+  logged as a page).
+- So the game put the display in 1080p itself. The exe imports no ChangeDisplaySettings (dumpbin: EnumDisplaySettingsW,
+  GetMonitorInfoW, GetSystemMetrics, SetWindowPos, AdjustWindowRect...), so it came through DXGI: ResizeTarget, or
+  SetFullscreenState (mode from the buffers; swapchain flags 0x2 ALLOW_MODE_SWITCH). With the mod the only 1920x1080
+  the game sees is the logical client size: prime suspect, unproven. Stock not tried.
+- Never reproduced: capture-analyst swept 95 game sessions in scratch/logs; all ~40 4K Fullscreen startups have the
+  same order (1360x768 device, SetFullscreenState(0), CreateSwapChain 3840x2160, SetFullscreenState(1), ui scale 2/1
+  0.14-0.22 s later, ResizeBuffers(0x0), ResizeTarget(3840x2160), first Present), health `k 2/1`, no WARNING. The
+  11-08 release launches drove menus at 4K click positions. The 11-08 report ("fullscreen doesn't work correctly",
+  2.1.3, Options open 46 s) may have been this rather than the popup bug 2.1.4 fixed.
+- Dev-only logging added (all behind kLogging or Log, a no-op in the release; the release was not rebuilt or
+  compile-checked: build.cmd release would overwrite the shipped zip): caller module+offset on SetFullscreenState,
+  ResizeTarget, ResizeBuffers; window events WM_DISPLAYCHANGE, WM_ACTIVATEAPP, WM_SIZE (real), WM_WINDOWPOSCHANGED
+  with a size or frame change (capped at 300 lines); WARNING when fullscreen with the monitor not at the size the
+  game last asked for (creation or ResizeTarget) at two 2 s checks. proxytest PASSED, new lines in its log; the
+  WARNING path is unexercised (proxytest makes no fullscreen switch).
+- Next, when Ethan allows the game: reproduce with fresh Steam launches left untouched, as Ethan does. Lead with the
+  release, the display mode read from outside (EnumDisplaySettings or the snap size); then the dev build; stock
+  (uninstalled) as the control: if stock does it too, it's a README note. Timing alone is a weak explanation (Log is
+  one cached WriteFile per line). Asked Ethan what Options' Resolution row said while the monitor was in 1080p.
