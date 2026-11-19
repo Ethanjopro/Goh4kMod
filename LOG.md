@@ -1,7 +1,7 @@
 # Goh4kMod log
 
 ## Status
-1.0 (M1-M5, 2026-10-02/04, commit e338dd9) replaced by 2.0 native scaling (2026-10-05, commit f08b58d).
+1.0 (M1-M5, 2026-10-02/04, commit 6d1f279) replaced by 2.0 native scaling (2026-10-05, commit 7de31c6).
 - Release 2.1.4 is INSTALLED (2026-11-08), the same files as build\release\Goh4kMod-2.1.4.zip: d3d11.dll and
   dxgi.dll in binaries\x64. Nexus still serves 2.1.3 until Ethan says to upload.
 - The game is set to 3840x2160 Fullscreen (Ethan's choice for 2.0); the UI keeps its 1080p size.
@@ -50,7 +50,7 @@
   one popup replaces another in the same frame -> the draw's own coordinates decide (NOTES History 21).
 
 ## Game-folder changes
-Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later test builds were not kept.
+Summarized 2026-10-05. Per-build lines up to 1.0 are in git (6d1f279); later test builds were not kept.
 - Deploys of dev and release builds: 2026-10-02 40, 2026-10-04 15, 2026-10-05 83 file copies (d3d11.dll, dxgi.dll, Uninstall Goh4kMod.bat).
 - Every uninstall ended with "folder matches the baseline (26 files)": 2026-10-02 03:05, 2026-10-02 12:15, 2026-10-02 14:12, 2026-10-02 15:54, 2026-10-04 02:08, 2026-10-04 03:07, 2026-10-04 03:18, 2026-10-05 14:14, 2026-10-05 14:17.
 - Installed at the time of this summary: the 2.1 release (build\release\Goh4kMod-2.1.zip, 2026-10-05 19:42). Later deploys follow:
@@ -351,7 +351,7 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
 - Tried skipping the manual 1920x1080 step by having the dxgi proxy report every display mode at half size.
   It worked in game (captures/keep4k/), but it removed native 4K from Options and the game rewrote the
   player's saved resolution. Ethan rejected it: the mod must not take away or change game options, and
-  no trade-off is worth it. All feature code is reverted to e338dd9; NOTES point 11 keeps what was learned.
+  no trade-off is worth it. All feature code is reverted to 6d1f279; NOTES point 11 keeps what was learned.
 - Kept (net goods): the packaging work from earlier today, plus a fix for a flaky self-test. uninstall.ps1
   archived deployed.txt as scratch\deployed-<seconds>.txt, so two uninstalls in one second collided
   (exit 1, about 1 run in 5), and test runs wrote these records into the real scratch\. Now they go to
@@ -470,11 +470,11 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
     32-stock-before); alt-tab then a squad-card click works (42); no diagnostics folder created.
   - options.set: only `mode` differs from the session-start backup (now 3840x2160, Ethan's choice); saves
     byte-identical.
-- 1.0 is kept: commit e338dd9, build\release\Goh4kMod-1.0\ and scratch\Goh4kMod-1.0-release.zip; the last
+- 1.0 is kept: commit 6d1f279, build\release\Goh4kMod-1.0\ and scratch\Goh4kMod-1.0-release.zip; the last
   state with both paths is in scratch\src-hybrid-2026-10-05.
 
 ### 2026-10-05 Code-review fixes for 2.0 (all 15 findings)
-- Review of f08b58d: 15 findings. All addressed; the in-game ones were checked in game first.
+- Review of 7de31c6: 15 findings. All addressed; the in-game ones were checked in game first.
 - **Found while testing (not in the review): windowed mode changed the player's setting.** In a window
   smaller than its monitor the game takes the client size as its resolution and saves it: a 2560x1440
   window was saved as `mode`/`custom_mode` "1920x1080". Fix: only a client covering its whole monitor
@@ -536,7 +536,7 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   over the Game Menu, YES back to the menu, 1440p Exit prompt: no intermediate frame, no top-left copy.
 
 ### 2026-10-05 2.1 sturdiness (PLAN.md 2.1; Ethan: A, B1 overlays, C, D, E; none of the decisions)
-- **Bugs fixed, each with a proxytest case that fails on the 2.0 build (bad9465, worktree run) and passes now:**
+- **Bugs fixed, each with a proxytest case that fails on the 2.0 build (c21f15e, worktree run) and passes now:**
   - Rule 3 trusted the last PSSetShaderResources: D3D11 unbinds a view by itself when its texture becomes a
     render target, and 2.0 then put that stale view back after its stand-in draw (and would touch it once
     the game freed it). Slot 0 is now read back from the context.
@@ -797,3 +797,17 @@ Summarized 2026-10-05. Per-build lines up to 1.0 are in git (e338dd9); later tes
   release, the display mode read from outside (EnumDisplaySettings or the snap size); then the dev build; stock
   (uninstalled) as the control: if stock does it too, it's a README note. Timing alone is a weak explanation (Log is
   one cached WriteFile per line). Asked Ethan what Options' Resolution row said while the monitor was in 1080p.
+
+### 2026-11-18 Public GitHub repo (Ethan: "make this project into a public repo on my account")
+- Repo github.com/Ethanjopro/Goh4kMod, public, branch master. Created through the GitHub API with the token Git
+  Credential Manager already held for Ethanjopro (no gh CLI installed; nothing installed). Created private,
+  pushed, checked, then made public.
+- Ethan's choices: license GPL-3.0 (LICENSE; MinHook keeps BSD-2); history rewritten so the 25 commits are
+  authored by 229634351+Ethanjopro@users.noreply.github.com (was ethan@localhost) and link to his profile.
+  Repo-local user.name/user.email set to that; nothing global. Every hash changed: e338dd9 -> 6d1f279,
+  f08b58d -> 7de31c6, bad9465 -> c21f15e (LOG.md, NOTES.md and one commit message updated). Pre-rewrite
+  backup: scratch/pre-public-rewrite.bundle, old->new list base in scratch/pre-rewrite-hashes.txt.
+- Added README.md, SECURITY.md (private vulnerability reporting enabled on the repo), LICENSE; .gitignore now
+  also covers build output (*.dll *.exe *.pdb *.obj *.lib *.zip ...), .vs/, *.user. CLAUDE.md no longer names
+  the local user folder. Older commits still contain the Windows user name in CLAUDE.md's path (not a
+  secret; left as is).

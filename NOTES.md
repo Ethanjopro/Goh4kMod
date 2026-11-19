@@ -72,7 +72,7 @@ and below, is left exactly as the stock game has it. The game's exe and memory a
 9. **1.x (dropped in 2.0):** the game was set to 1920x1080 and the proxy rendered every screen-sized
    target at 2x, with a backbuffer wrapper, viewport/scissor/copy-box scaling and constant-buffer
    patches. It needed a 4K monitor and a manual resolution step. Ethan chose native scaling only for
-   2.0, to keep the mod as unintrusive as possible. The 1.0 source is commit e338dd9; the last state with
+   2.0, to keep the mod as unintrusive as possible. The 1.0 source is commit 6d1f279; the last state with
    both paths is in scratch/src-hybrid-2026-10-05 (not in git).
 10. **Rejected: lying about the display mode list** (2026-10-04). It removed native 4K from Options and
    rewrote the saved resolution. Ethan's rule: the mod must not take away or change any game option.

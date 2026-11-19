@@ -1,10 +1,33 @@
+# Local work folders (builds, portable tools, game captures, backups of stock game files)
 build/
 tools/
 captures/
 scratch/
-*.rdc
+
+# Machine-specific settings
 .claude/game-bin.txt
 .claude/settings.local.json
+.vs/
+*.user
+*.suo
+
+# Captures, dumps and logs from the game
+*.rdc
 *.dmp
 *.png
 *.log
+
+# Build output, in case it lands outside build/
+*.dll
+*.exe
+*.pdb
+*.obj
+*.ilk
+*.exp
+*.lib
+*.res
+*.zip
+
+# Editor / OS clutter
+Thumbs.db
+desktop.ini
